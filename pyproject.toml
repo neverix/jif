@@ -13,6 +13,7 @@ dependencies = [
     "penzai>=0.1.4",
     "fire>=0.6.0",
     "datasets>=2.20.0",
+    "more-itertools>=10.3.0",
 ]
 
 

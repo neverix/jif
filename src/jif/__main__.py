@@ -1,9 +1,9 @@
-from .data import get_data
+from .data import get_data, collate
 import fire
 
 
 def main():
-    for sample in get_data():
+    for sample in collate(get_data(), 4, 16):
         print(sample)
         break
 
