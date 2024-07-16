@@ -27,3 +27,9 @@ url = "https://storage.googleapis.com/jax-releases/libtpu_releases.html"
 [[tool.pdm.source]]
 name = "torch"
 url = "https://download.pytorch.org/whl/cpu"
+
+[tool.pdm.dev-dependencies]
+jupyter = [
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.3",
+]
