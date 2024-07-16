@@ -1,5 +1,5 @@
-from more_itertools import chunked
 from datasets import load_dataset
+from more_itertools import chunked
 
 
 def get_data(split="train"):

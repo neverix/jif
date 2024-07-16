@@ -1,5 +1,6 @@
-from .data import get_data, collate
 import fire
+
+from .data import collate, get_data
 
 
 def main():
