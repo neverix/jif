@@ -62,6 +62,17 @@ class AbsorbingDiffusion:
             probs = stag_score * self.transp_transition(x, dsigma)
             return probs
 
+        def denoise_update_fn(score_fn, x, t):
+            sigma = self.noise_schedule(t)[0]
+
+            score = jnp.exp(score_fn(x, sigma))
+            stag_score = self.staggered_score(score, sigma)
+            probs = stag_score * self.transp_transition(x, sigma)
+            # truncate probabilities
+            probs = probs[..., :-1]
+
+            return probs
+
         x = self.sample_limit(batch_shape)
         timesteps = jnp.linspace(1, self.noise_eps, n_steps + 1)
         dt = (1 - self.noise_eps) / max(n_steps, 1)
@@ -80,8 +91,9 @@ class AbsorbingDiffusion:
             # denoising step
             x = projector(x)
             t = timesteps[-1] * jnp.ones(x.shape)
-            probs = update_fn(score_fn, x, t, dt)
-            x = probs[..., :-1].argmax(-1)
+            probs = denoise_update_fn(score_fn, x, t)
+            # x = jax.random.categorical(key, probs)
+            x = probs.argmax(-1)
         return x
 
     # https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/f7221e3b835045f75444c7429955aa420111cc7d/noise_lib.py#L56
