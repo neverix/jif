@@ -27,6 +27,7 @@ class AbsorbingDiffusion:
 
     # https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/f7221e3b835045f75444c7429955aa420111cc7d/graph_lib.py#L244
     def score_entropy(self, score, sigma, x, x0):
+        # score = score.at[..., :-1].add(-jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True))
         esigm1 = jnp.where(
             sigma < 0.5,
             jnp.expm1(sigma),
@@ -34,6 +35,9 @@ class AbsorbingDiffusion:
         )
 
         ratio = 1 / jnp.repeat(esigm1, x.shape[-1], -1)
+        # print(jnp.log(ratio).shape, jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True).shape)
+        correction = jnp.log(ratio)[..., None] - jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True)
+        score = score.at[..., :-1].add(correction)
         other_ind = x0
 
         # negative_term
@@ -44,10 +48,28 @@ class AbsorbingDiffusion:
 
         # constant term
         const = ratio * (jnp.log(ratio) - 1)
+        
+        # lg_term = -jnp.take_along_axis(jax.nn.log_softmax(score[..., :-1], axis=-1), other_ind[..., None], -1).squeeze(-1)
 
         rel_ind = x == self.n_classes
         entropy = jnp.where(rel_ind, pos_term - neg_term + const, jnp.zeros(x.shape, score.dtype))
-        return entropy
+
+        # pos_term - neg_term = jnp.exp(score[..., :-1]).sum(axis=-1) - ratio * jnp.take_along_axis(score, other_ind[..., None], -1).squeeze(-1)
+        # pos_term - neg_term = jnp.exp(score[..., :-1]).sum(axis=-1) - ratio * (jnp.take_along_axis(jax.nn.log_softmax(score[..., :-1]), other_ind[..., None], -1).squeeze(-1) + jax.nn.logsumexp(score[..., :-1], axis=-1))
+        # pos_term - neg_term = jnp.exp(score[..., :-1]).sum(axis=-1) / ratio - jax.nn.logsumexp(score[..., :-1], axis=-1) - jnp.take_along_axis(jax.nn.log_softmax(score[..., :-1]), other_ind[..., None], -1).squeeze(-1)
+        sumexp = jnp.exp(score[..., :-1]).sum(axis=-1)
+        # pos_term - neg_term = sumexp / ratio - jnp.log(sumexp + jnp.exp(score[..., -1])) -jnp.take_along_axis(jax.nn.log_softmax(score), other_ind[..., None], -1).squeeze(-1)
+        nll_loss = -jnp.take_along_axis(jax.nn.log_softmax(score[..., :-1]), other_ind[..., None], -1).squeeze(-1)
+        ratio_loss = jax.lax.stop_gradient(sumexp / ratio - jnp.log(sumexp))
+        # f_a(x, y) = x / a - jnp.log(x + y)  { y >= 0 }
+        # d/dx f_a(x, y) = 1 / a - 1 / (x + y)
+        # d/dy f_a(x, y) = -1 / (x + y)
+
+        fake_entropy = const + ratio * (ratio_loss + nll_loss)
+        fake_entropy = jnp.where(rel_ind, fake_entropy, jnp.zeros(x.shape, score.dtype))
+        # jax.debug.print("{}-{} {}", sumexp.min(), sumexp.max(), jnp.abs(fake_entropy - entropy).mean())
+        # jax.debug.print("{}", jnp.abs(fake_entropy - entropy))
+        return fake_entropy
 
     def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x):
         # https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/f7221e3b835045f75444c7429955aa420111cc7d/sampling.py#L78
@@ -83,7 +105,11 @@ class AbsorbingDiffusion:
             t = timesteps[i] * jnp.ones(x.shape)
             x = projector(x)
             probs = update_fn(score_fn, x, t, dt)
-            x = jax.random.categorical(subkey, probs)
+            # jax.debug.print("{}", (probs[..., -1] != 0) == (x == self.n_classes))
+            x = jax.random.categorical(subkey, jnp.log(probs + 1e-10))
+            # x = jax.random.categorical(subkey, probs / probs.sum(axis=-1, keepdims=True))
+            # gumbel_norm = 1e-10 - jnp.log(jax.random.uniform(subkey, shape=probs.shape) + 1e-10)
+            # x = (probs / gumbel_norm).argmax(axis=-1)
             return key, x
         key, x = jax.lax.fori_loop(0, n_steps, update, (key, x))
 
@@ -105,8 +131,11 @@ class AbsorbingDiffusion:
     # https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/f7221e3b835045f75444c7429955aa420111cc7d/graph_lib.py#L234C1-L239C21
     def staggered_score(self, score, dsigma):
         dse = jnp.exp(dsigma)
-        extra_const = (1 - dse) * score.sum(axis=-1)
-        score = (score * dse[..., None]).at[..., -1].add(extra_const)
+        # extra_const = (1 - dse) * score.sum(axis=-1)
+        # extra_const = (1 - dse) * score[..., :-1].sum(axis=-1) + score[..., -1] - dse * score[..., -1]
+        # extra_const = (1 - dse) * score[..., :-1].sum(axis=-1) + score[..., -1] - dse * score[..., -1]
+        extra_const = (1 - dse) * score[..., :-1].sum(axis=-1) + score[..., -1]
+        score = (score * dse[..., None]).at[..., -1].set(extra_const)
         return score
 
     # https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/f7221e3b835045f75444c7429955aa420111cc7d/graph_lib.py#L218
