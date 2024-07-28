@@ -152,3 +152,31 @@ class AbsorbingDiffusion:
 
     def sample_limit(self, dims):
         return jnp.full(dims, self.n_classes)
+
+
+@dataclass
+class MDLMDiffusion:
+    # untested
+    n_classes: int
+    noise_eps: float = 1e-3
+
+    def get_loss(self, key, score_fn, data):
+        t = jnp.linspace(1, self.noise_eps, data.shape[0])
+        alpha, rate = self.alpha(t), self.alpha_rate(t)
+        data_perturbed = self.sample_transition(key, data, alpha)
+        logits = score_fn(data_perturbed, alpha)
+        nll = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), data[..., None], -1).squeeze(-1)
+        loss = ((rate / (1 - alpha)) * nll * (data_perturbed == self.n_classes))
+        return loss
+
+    def sample_transition(self, key, data, alpha):
+        mask_chance = 1 - alpha
+        mask_indices = jax.random.bernoulli(key, mask_chance, data.shape)
+        data_perturbed = jnp.where(mask_indices, self.n_classes, data)
+        return data_perturbed
+
+    def alpha(self, t):
+        return 1 - self.noise_eps - (1 - self.noise_eps) * t
+
+    def alpha_rate(self, _t):
+        return jnp.full_like(_t, -(1 - self.noise_eps))
