@@ -37,7 +37,7 @@ class AbsorbingDiffusion:
         ratio = 1 / jnp.repeat(esigm1, x.shape[-1], -1)
         # print(jnp.log(ratio).shape, jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True).shape)
         correction = jnp.log(ratio)[..., None] - jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True)
-        score = score.at[..., :-1].add(correction)
+        score = score.at[..., :-1].add(jax.lax.stop_gradient(correction))
         other_ind = x0
 
         # negative_term
@@ -61,11 +61,19 @@ class AbsorbingDiffusion:
         # pos_term - neg_term = sumexp / ratio - jnp.log(sumexp + jnp.exp(score[..., -1])) -jnp.take_along_axis(jax.nn.log_softmax(score), other_ind[..., None], -1).squeeze(-1)
         nll_loss = -jnp.take_along_axis(jax.nn.log_softmax(score[..., :-1]), other_ind[..., None], -1).squeeze(-1)
         ratio_loss = jax.lax.stop_gradient(sumexp / ratio - jnp.log(sumexp))
+        # z_loss = 1e-4 * (correction ** 2).squeeze(-1)
+        # z_loss = 1e-3 * (jax.nn.logsumexp(score[..., :-1], axis=-1) ** 2)
+        z_loss = 0
+        # print(z_loss.shape, z_loss.min(), z_loss.max())
+        # print(z_loss.shape)
+        # jax.debug.print("{} {}", z_loss.min(), z_loss.max())
+        # jax.debug.print("{} {}", nll_loss.min(), nll_loss.max())
+
         # f_a(x, y) = x / a - jnp.log(x + y)  { y >= 0 }
         # d/dx f_a(x, y) = 1 / a - 1 / (x + y)
         # d/dy f_a(x, y) = -1 / (x + y)
 
-        fake_entropy = const + ratio * (ratio_loss + nll_loss)
+        fake_entropy = const + ratio * (ratio_loss + nll_loss + z_loss)
         fake_entropy = jnp.where(rel_ind, fake_entropy, jnp.zeros(x.shape, score.dtype))
         # jax.debug.print("{}-{} {}", sumexp.min(), sumexp.max(), jnp.abs(fake_entropy - entropy).mean())
         # jax.debug.print("{}", jnp.abs(fake_entropy - entropy))
