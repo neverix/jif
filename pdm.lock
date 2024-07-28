@@ -323,22 +323,6 @@ files = [
 ]
 
 [[package]]
-name = "equinox"
-version = "0.11.4"
-requires_python = "~=3.9"
-summary = "Elegant easy-to-use neural networks in JAX."
-groups = ["default"]
-dependencies = [
-    "jax>=0.4.13",
-    "jaxtyping>=0.2.20",
-    "typing-extensions>=4.5.0",
-]
-files = [
-    {file = "equinox-0.11.4-py3-none-any.whl", hash = "sha256:a9527b1fe0c4778c3c959d9091b1eea28c3fdcca01790a47e71b47df94889315"},
-    {file = "equinox-0.11.4.tar.gz", hash = "sha256:0033d9731083f402a855b12a0777a80aa8507651f7aa86d9f0f9503bcddfd320"},
-]
-
-[[package]]
 name = "etils"
 version = "1.7.0"
 requires_python = ">=3.10"
@@ -643,20 +627,6 @@ files = [
     {file = "jaxlib-0.4.30-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:28e032c9b394ab7624d89b0d9d3bbcf4d1d71694fe8b3e09d3fe64122eda7b0c"},
     {file = "jaxlib-0.4.30-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:d83f36ef42a403bbf7c7f2da526b34ba286988e170f4df5e58b3bb735417868c"},
     {file = "jaxlib-0.4.30-cp310-cp310-win_amd64.whl", hash = "sha256:a56678b28f96b524ded6da8ef4b38e72a532356d139cfd434da804abf4234e14"},
-]
-
-[[package]]
-name = "jaxtyping"
-version = "0.2.33"
-requires_python = "~=3.9"
-summary = "Type annotations and runtime checking for shape and dtype of JAX arrays, and PyTrees."
-groups = ["default"]
-dependencies = [
-    "typeguard==2.13.3",
-]
-files = [
-    {file = "jaxtyping-0.2.33-py3-none-any.whl", hash = "sha256:918d6094c73f28d3196185ef55d1832cbcd2804d1d388f180060c4366a9e2107"},
-    {file = "jaxtyping-0.2.33.tar.gz", hash = "sha256:9a9cfccae4fe05114b9fb27a5ea5440be4971a5a075bbd0526f6dd7d2730f83e"},
 ]
 
 [[package]]
@@ -1077,21 +1047,21 @@ files = [
 
 [[package]]
 name = "penzai"
-version = "0.1.4"
+version = "0.2.0"
 requires_python = ">=3.10"
 summary = "Penzai: A JAX research toolkit for building, editing, and visualizing neural networks."
 groups = ["default"]
 dependencies = [
     "absl-py>=1.4.0",
-    "equinox>=0.11.3",
     "jax>=0.4.23",
     "numpy>=1.25.2",
     "ordered-set>=4.1.0",
+    "treescope>=0.1.0",
     "typing-extensions>=4.2",
 ]
 files = [
-    {file = "penzai-0.1.4-py3-none-any.whl", hash = "sha256:0f734b0352a14e4bd75d09dcd689c700b712e245d8505996ebc642d076e78d83"},
-    {file = "penzai-0.1.4.tar.gz", hash = "sha256:a0cace679f781a519e93e1e8cb52aa0b4184ca0261da25407c6318c52c49c699"},
+    {file = "penzai-0.2.0-py3-none-any.whl", hash = "sha256:c7e63c909f65bb018e0745f243a06063cfda780e1f07d90829994f14868fbffd"},
+    {file = "penzai-0.2.0.tar.gz", hash = "sha256:52ca4a9365f09d71852d44e9b4beaa3635dcdb2870bf0e9c984295c5edf9bb59"},
 ]
 
 [[package]]
@@ -1554,14 +1524,17 @@ files = [
 ]
 
 [[package]]
-name = "typeguard"
-version = "2.13.3"
-requires_python = ">=3.5.3"
-summary = "Run-time type checker for Python"
+name = "treescope"
+version = "0.1.0"
+requires_python = ">=3.10"
+summary = "Treescope: An interactive HTML pretty-printer for ML research in IPython notebooks."
 groups = ["default"]
+dependencies = [
+    "numpy>=1.25.2",
+]
 files = [
-    {file = "typeguard-2.13.3-py3-none-any.whl", hash = "sha256:5e3e3be01e887e7eafae5af63d1f36c849aaa94e3a0112097312aabfa16284f1"},
-    {file = "typeguard-2.13.3.tar.gz", hash = "sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4"},
+    {file = "treescope-0.1.0-py3-none-any.whl", hash = "sha256:cdd79b7837bd0ab7c1051e27040a0456102bd7a3fa379b2e87957ad074473d4f"},
+    {file = "treescope-0.1.0.tar.gz", hash = "sha256:9c3c6ab5e79491ac4462ede572266a3432238a001f09892e5edc3aba5ef06c70"},
 ]
 
 [[package]]
