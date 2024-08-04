@@ -14,16 +14,25 @@ dependencies = [
     "fire>=0.6.0",
     "datasets>=2.20.0",
     "more-itertools>=10.3.0",
-    "optax>=0.2.3",
+    "wandb>=0.17.5",
+    "jax[tpu]>=0.4.31",
 ]
 
 
 [tool.pdm]
 distribution = false
 
+[tool.pdm.resolution]
+respect-source-order = true
+
 [[tool.pdm.source]]
 name = "libtpu"
 url = "https://storage.googleapis.com/jax-releases/libtpu_releases.html"
+type = "find_links"
+
+[[tool.pdm.source]]
+name = "jax-nightly"
+url = "https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"
 
 [[tool.pdm.source]]
 name = "torch"

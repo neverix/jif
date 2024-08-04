@@ -30,9 +30,17 @@ class DiTConfig:
     freq_embed_dim: int = 256
     time_act: Literal["silu"] = "silu"
     
-    act_dtype: jax.typing.DTypeLike = jnp.float32
-    param_dtype: jax.typing.DTypeLike = jnp.float32
+    act_dtype: str = "float32"
+    param_dtype: str = "float32"
     rope_wavelength: float = 10_000.0
+
+    @property
+    def activation_dtype(self):
+        return getattr(jnp, self.act_dtype)
+
+    @property
+    def parameter_dtype(self):
+        return getattr(jnp, self.param_dtype)
 
 
 @pz.pytree_dataclass
@@ -48,7 +56,7 @@ class AdaLNCondition(pz.nn.Layer):
                 input_axes={"cond_embedding": config.cond_dim},
                 output_axes={"embedding": config.d_model},
                 name=f"{name}/projection_scale",
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
             ),
             projection_bias=(
                 pz.nn.Affine.from_config(
@@ -56,7 +64,7 @@ class AdaLNCondition(pz.nn.Layer):
                     input_axes={"cond_embedding": config.cond_dim},
                     output_axes={"embedding": config.d_model},
                     name=f"{name}/projection_bias",
-                    dtype=config.param_dtype,
+                    dtype=config.parameter_dtype,
                 ) if use_bias else None
             )
         )
@@ -92,7 +100,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                     "q_rep": q_rep,
                     "qk_dim": config.qk_dim,
                 },
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
                 name=f"{name}/query_proj",
                 init_base_rng=init_base_rng,
             ),
@@ -103,7 +111,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             ),
             pz.nn.ConstantRescale(
                 by=jnp.array(
-                    qk_dim**-0.5, dtype=config.act_dtype
+                    qk_dim**-0.5, dtype=config.activation_dtype
                 )
             ),
         ]),
@@ -114,7 +122,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                     "kv_heads": num_heads,
                     "qk_dim": qk_dim,
                 },
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
                 name=f"{name}/key_proj",
                 init_base_rng=init_base_rng,
             ),
@@ -123,7 +131,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                 embedding_axis="qk_dim",
                 max_wavelength=config.rope_wavelength,
             ),
-            pz.nn.CastToDType(config.act_dtype),
+            pz.nn.CastToDType(config.activation_dtype),
         ]),
         input_to_value=pz.nn.Sequential([
             pz.nn.Linear.from_config(
@@ -132,11 +140,11 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                     "kv_heads": num_heads,
                     "v_dim": v_dim,
                 },
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
                 name=f"{name}/value_proj",
                 init_base_rng=init_base_rng,
             ),
-            pz.nn.CastToDType(config.act_dtype),
+            pz.nn.CastToDType(config.activation_dtype),
         ]),
         query_key_to_attn=pz.nn.Sequential([
             pz.nn.NamedEinsum(
@@ -163,7 +171,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                     "v_dim": v_dim,
                 },
                 output_axes={"embedding": hidden_size},
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
                 name=f"{name}/output_proj",
                 init_base_rng=init_base_rng,
             ),
@@ -178,7 +186,7 @@ def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
             input_axes={"embedding": config.d_model},
             output_axes={"neurons": config.d_ff},
             name=f"{name}/in_linear",
-            dtype=config.param_dtype,
+            dtype=config.parameter_dtype,
         ),
         pz.nn.Elementwise(ACT_FN_MAP[config.ff_act]),
         pz.nn.Affine.from_config(
@@ -186,7 +194,7 @@ def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
             input_axes={"neurons": config.d_ff},
             output_axes={"embedding": config.d_model},
             name=f"{name}/out_linear",
-            dtype=config.param_dtype,
+            dtype=config.parameter_dtype,
         ),
     ])
 
@@ -216,10 +224,10 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
                 init_base_rng=init_base_rng,
                 vocab_size=config.vocab_size + 1,
                 embedding_axes={"embedding": config.d_model},
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
             ),
         ),
-        pz.nn.CastToDType(dtype=config.act_dtype),
+        pz.nn.CastToDType(dtype=config.activation_dtype),
         pz.nn.LayerStack.from_sublayer_builder(
             builder=build_dit_block,
             stack_axis="blocks",
@@ -236,7 +244,7 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
                 input_axes={"embedding": config.d_model},
                 output_axes={"vocabulary": config.vocab_size},
                 name=f"{name}/unembedder",
-                dtype=config.param_dtype,
+                dtype=config.parameter_dtype,
             ),
             scale_output=False
         )
