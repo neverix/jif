@@ -296,6 +296,15 @@ class DitWithTimestep(pz.nn.Layer):
         timestep_cond = self.timestep_mlp(t_embed)
         return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond})
 
+    @classmethod
+    def wrap_inputs(cls, x, mask, t=None):
+        if t is None:
+            t = (x == mask).mean(axis=-1)
+        positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
+        x = pz.nx.wrap(x, "batch", "seq")
+        t = pz.nx.wrap(t, "batch")
+        return x, dict(timestep=t, positions=positions)
+
 
 if __name__ == "__main__":
     config = DiTConfig(vocab_size=128)
