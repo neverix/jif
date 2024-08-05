@@ -12,7 +12,7 @@ from penzai import pz
 
 from .model import DiTConfig, DitWithTimestep
 from .data import collate, get_data
-from .diffusion import AbsorbingDiffusion
+from .diffusion import MDLMDiffusion
 
 
 def main(
@@ -27,8 +27,8 @@ def main(
     wandb_config = run.config
 
     n_classes = 256
-    diffusion = AbsorbingDiffusion(n_classes, diffusion_eps)
-    config = DiTConfig(vocab_size=128)
+    diffusion = MDLMDiffusion(n_classes, diffusion_eps)
+    config = DiTConfig(vocab_size=n_classes)
 
     wandb_config.n_classes = n_classes
     wandb_config.n_steps = n_steps
@@ -47,20 +47,6 @@ def main(
         x, side_inputs = model.wrap_inputs(x, mask)
         y = model(x, **side_inputs)
         return y.unwrap("batch", "seq", "vocabulary")
-
-    treedef = pz.unbind_params(model)[0]
-
-    def get_attr(model, key):
-        selection = model
-        for k in key:
-            if isinstance(k, GetAttrKey):
-                selection = getattr(selection, k.name)
-            elif isinstance(k, SequenceKey):
-                selection = selection[k.idx]
-            elif isinstance(k, DictKey):
-                selection = selection[k.key]
-            else:
-                raise ValueError(f"Unknown key type: {k}")
 
     def get_loss(model, rng, state, sample):
         ema = state["ema"]
