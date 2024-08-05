@@ -1,5 +1,5 @@
 import fire
-from tqdm import tqdm
+from tqdm import trange
 from functools import partial
 
 import jax
@@ -17,18 +17,22 @@ from .diffusion import AbsorbingDiffusion
 
 def main(
     batch_size = 128,
-    seq_len = 128,
+    seq_len = 64,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
+    n_steps=100_000,
+    lr=1e-4,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config
 
-    n_classes = 128
+    n_classes = 256
     diffusion = AbsorbingDiffusion(n_classes, diffusion_eps)
     config = DiTConfig(vocab_size=128)
 
     wandb_config.n_classes = n_classes
+    wandb_config.n_steps = n_steps
+    wandb_config.lr = lr
     wandb_config.diffusion_eps = diffusion_eps
     wandb_config.ema_decay = ema_decay
     wandb_config.batch_size = batch_size
@@ -68,17 +72,17 @@ def main(
     
     trainer = basic_training.StatefulTrainer.build(
         model=model,
-        optimizer_def=optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(1e-4)),
+        optimizer_def=optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(optax.warmup_cosine_decay_schedule(0, lr, 100, n_steps))),
         root_rng=jax.random.key(0),
         loss_fn=get_loss,
         initial_loss_fn_state=dict(ema=[x.value.unwrap(*x.value.named_shape.keys()).copy() for x in pz.unbind_params(model)[1]]),
         donate_states=True)
     
-    for i, (sample, _, _) in enumerate((bar := tqdm(collate(get_data(), batch_size, seq_len)))):
+    for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(get_data(), batch_size, seq_len)):
         out = trainer.step(sample=sample)
-        if i % 10 == 0:
+        if i % 2 == 0:
             bar.set_postfix(loss=out["loss"])
-            wandb.log(dict(loss=out["loss"]))
+            wandb.log(dict(loss=out["loss"]), step=i)
 
 
 if __name__ == "__main__":

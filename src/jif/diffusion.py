@@ -8,6 +8,7 @@ import jax.numpy as jnp
 class AbsorbingDiffusion:
     n_classes: int
     noise_eps: float = 1e-3
+    z_loss_coeff: float = 1e-4
 
     def get_loss(self, key, score_fn, data):
         noise_key, transition_key = jax.random.split(key, 2)
@@ -37,7 +38,7 @@ class AbsorbingDiffusion:
         ratio = 1 / jnp.repeat(esigm1, x.shape[-1], -1)
         # print(jnp.log(ratio).shape, jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True).shape)
         correction = jnp.log(ratio)[..., None] - jax.nn.logsumexp(score[..., :-1], axis=-1, keepdims=True)
-        score = score.at[..., :-1].add(jax.lax.stop_gradient(correction))
+        # score = score.at[..., :-1].add(jax.lax.stop_gradient(correction))
         other_ind = x0
 
         # negative_term
@@ -63,7 +64,8 @@ class AbsorbingDiffusion:
         ratio_loss = jax.lax.stop_gradient(sumexp / ratio - jnp.log(sumexp))
         # z_loss = 1e-4 * (correction ** 2).squeeze(-1)
         # z_loss = 1e-3 * (jax.nn.logsumexp(score[..., :-1], axis=-1) ** 2)
-        z_loss = 0
+        z_loss = self.z_loss_coeff * (jax.nn.logsumexp(score[..., :-1], axis=-1) ** 2)
+        # z_loss = 0
         # print(z_loss.shape, z_loss.min(), z_loss.max())
         # print(z_loss.shape)
         # jax.debug.print("{} {}", z_loss.min(), z_loss.max())
@@ -73,7 +75,8 @@ class AbsorbingDiffusion:
         # d/dx f_a(x, y) = 1 / a - 1 / (x + y)
         # d/dy f_a(x, y) = -1 / (x + y)
 
-        fake_entropy = const + ratio * (ratio_loss + nll_loss + z_loss)
+        # fake_entropy = const + ratio * (ratio_loss + nll_loss + z_loss)
+        fake_entropy = ratio * (nll_loss + z_loss)
         fake_entropy = jnp.where(rel_ind, fake_entropy, jnp.zeros(x.shape, score.dtype))
         # jax.debug.print("{}-{} {}", sumexp.min(), sumexp.max(), jnp.abs(fake_entropy - entropy).mean())
         # jax.debug.print("{}", jnp.abs(fake_entropy - entropy))
