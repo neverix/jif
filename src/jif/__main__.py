@@ -87,6 +87,7 @@ def main(
             old_sample = sample[:1] * len(sample)
         sample = old_sample
         sample = jnp.array(sample)
+        sample = jnp.full_like(sample, 65).at[..., seq_len // 2:].set(66).at[..., 0].set(67)
         out = trainer.step(sample=sample)
         if i % 2 == 0:
             bar.set_postfix(loss=out["loss"])
