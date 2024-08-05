@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -142,8 +143,8 @@ class MDLMDiffusion:
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
         logits = score_fn(data_perturbed, alpha)
-        nll = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), data[..., None], -1).squeeze(-1)
-        loss = ((rate / (1 - alpha)) * nll * (data_perturbed == self.n_classes))
+        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), data[..., None], -1).squeeze(-1)
+        loss = ((rate / (1 - alpha)) * llh * (data_perturbed == self.n_classes))
         return loss
 
     def sample_transition(self, key, data, alpha):
@@ -158,29 +159,30 @@ class MDLMDiffusion:
     def alpha_rate(self, _t):
         return jnp.full_like(_t, -(1 - self.noise_eps))
 
-    # # untested
-    # def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x):
-    #     x = jnp.full(batch_shape, self.n_classes)
-    #     timesteps = jnp.linspace(1, 0, n_steps + 1)
-    #     dt = (1 - self.noise_eps) / max(n_steps, 1)
+    # @partial(jax.jit, static_argnames=("use_caching", "denoise", "batch_shape", "n_steps"))
+    def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x, use_caching=False):
+        assert not use_caching
+        x = jnp.full(batch_shape, self.n_classes)
+        timesteps = jnp.linspace(1, 0, n_steps + 1)
+        alphas = self.alpha(timesteps)
+        rates = self.alpha_rate(timesteps)
 
-    #     def update(i, carry):
-    #         key, x = carry
-    #         key, subkey = jax.random.split(key)
-    #         t = timesteps[i] * jnp.ones(x.shape)
-    #         x = projector(x)
-    #         probs = update_fn(score_fn, x, t, dt)
-    #         # jax.debug.print("{}", (probs[..., -1] != 0) == (x == self.n_classes))
-    #         x = jax.random.categorical(subkey, jnp.log(probs + 1e-10))
-    #         # x = jax.random.categorical(subkey, probs / probs.sum(axis=-1, keepdims=True))
-    #         # gumbel_norm = 1e-10 - jnp.log(jax.random.uniform(subkey, shape=probs.shape) + 1e-10)
-    #         # x = (probs / gumbel_norm).argmax(axis=-1)
-    #         return key, x
-    #     key, x = jax.lax.fori_loop(0, n_steps, update, (key, x))
+        def update(i, carry):
+            key, x = carry
+            key, subkey = jax.random.split(key)
+            a_prev = jnp.full(x.shape, alphas[i])
+            a_post = jnp.full(x.shape, alphas[i + 1])
+            x = projector(x)
+            logprobs = score_fn(x, a_prev)[..., :self.n_classes]
+            probs = jax.nn.softmax(logprobs, axis=-1)
+            probs = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
+            x = jax.random.categorical(subkey, jnp.log(1e-10 + probs))
+            return key, x
+        key, x = jax.lax.fori_loop(0, n_steps, update, (key, x))
 
-    #     if denoise:
-    #         # denoising step
-    #         x = projector(x)
-    #         t = jnp.full(x.shape, timesteps[-1])
-    #         x = score_fn(x, t).argmax(-1)
-    #     return x
+        if denoise:
+            # denoising step
+            x = projector(x)
+            t = jnp.full(x.shape, alphas[-1])
+            x = score_fn(x, t).argmax(-1)
+        return x
