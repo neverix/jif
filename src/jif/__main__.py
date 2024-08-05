@@ -55,7 +55,6 @@ def main(
         ema = jax.tree.map(lambda x, y: ema_decay * x + (1 - ema_decay) * y, ema, new_params)
         new_state = {"ema": ema}
 
-        sample = jnp.full_like(sample, 4)
         loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
         return loss.mean(), new_state, {"loss": loss.mean()}
 
@@ -79,7 +78,11 @@ def main(
         return samples
 
     detokenize, data_generator = get_data()
+    old_sample = None
     for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len)):
+        if old_sample is None:
+            old_sample = sample
+        sample = old_sample
         sample = jnp.array(sample)
         out = trainer.step(sample=sample)
         if i % 2 == 0:
