@@ -3,8 +3,14 @@ from more_itertools import chunked
 
 
 def get_data(split="train"):
-    for text in load_dataset("roneneldan/TinyStories", split=split):
-        yield list(map(ord, text["text"]))
+    def data_generator():
+        for text in load_dataset("roneneldan/TinyStories", split=split):
+            yield list(map(ord, text["text"]))
+    def detokenize(x):
+        if isinstance(x, list) and not isinstance(x[0], int):
+            return list(map(detokenize, x))
+        return "".join(map(chr, x))
+    return detokenize, data_generator()
 
 
 def collate(generator, batch_size, seq_len, pad_token_id=0):

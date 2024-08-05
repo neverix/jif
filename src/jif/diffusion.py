@@ -142,7 +142,7 @@ class MDLMDiffusion:
             t = jnp.repeat(t[..., None], s, -1)
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
-        logits = score_fn(data_perturbed, alpha)
+        logits = self.process_logits(score_fn(data_perturbed, alpha))
         llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), data[..., None], -1).squeeze(-1)
         loss = ((rate / (1 - alpha)) * llh * (data_perturbed == self.n_classes))
         return loss
@@ -159,6 +159,11 @@ class MDLMDiffusion:
     def alpha_rate(self, _t):
         return jnp.full_like(_t, -(1 - self.noise_eps))
 
+    def process_logits(self, logits):
+        logits = logits[..., :self.n_classes]
+        assert logits.shape[-1] == self.n_classes
+        return logits
+
     # @partial(jax.jit, static_argnames=("use_caching", "denoise", "batch_shape", "n_steps"))
     def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x, use_caching=False):
         assert not use_caching
@@ -173,8 +178,8 @@ class MDLMDiffusion:
             a_prev = jnp.full(x.shape, alphas[i])
             a_post = jnp.full(x.shape, alphas[i + 1])
             x = projector(x)
-            logprobs = score_fn(x, a_prev)[..., :self.n_classes]
-            probs = jax.nn.softmax(logprobs, axis=-1)
+            logits = self.process_logits(score_fn(x, a_prev))
+            probs = jax.nn.softmax(logits, axis=-1)
             probs = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
             x = jax.random.categorical(subkey, jnp.log(1e-10 + probs))
             return key, x
