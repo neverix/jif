@@ -18,10 +18,13 @@ class DiTConfig:
     n_layers: int = 6
     d_model: int = 512
 
-    n_kv_heads: int = 4
-    q_rep: int = 2
+    # n_kv_heads: int = 4
+    n_kv_heads: int = 8
+    # q_rep: int = 2
+    q_rep: int = 1
     qk_dim: int = 64
-    v_dim: int = 128
+    v_dim: int = 64
+    # v_dim: int = 128
 
     d_ff: int = 1024
     ff_act: Literal["gelu"] = "gelu"
@@ -93,12 +96,12 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
     v_dim = config.v_dim
     return pz.nn.Attention(
         input_to_query=pz.nn.Sequential([
-            pz.nn.Linear.from_config(
+            pz.nn.Affine.from_config(
                 input_axes={"embedding": hidden_size},
                 output_axes={
                     "kv_heads": num_heads,
                     "q_rep": q_rep,
-                    "qk_dim": config.qk_dim,
+                    "qk_dim": qk_dim,
                 },
                 dtype=config.parameter_dtype,
                 name=f"{name}/query_proj",
@@ -116,7 +119,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             ),
         ]),
         input_to_key=pz.nn.Sequential([
-            pz.nn.Linear.from_config(
+            pz.nn.Affine.from_config(
                 input_axes={"embedding": hidden_size},
                 output_axes={
                     "kv_heads": num_heads,
@@ -134,7 +137,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             pz.nn.CastToDType(config.activation_dtype),
         ]),
         input_to_value=pz.nn.Sequential([
-            pz.nn.Linear.from_config(
+            pz.nn.Affine.from_config(
                 input_axes={"embedding": hidden_size},
                 output_axes={
                     "kv_heads": num_heads,
@@ -164,7 +167,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                 ),
                 {"seq": "tq", "kv_heads": "h", "q_rep": "r", "v_dim": "p"},
             ),
-            pz.nn.Linear.from_config(
+            pz.nn.Affine.from_config(
                 input_axes={
                     "kv_heads": num_heads,
                     "q_rep": q_rep,
@@ -199,7 +202,7 @@ def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     ])
 
 
-def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfig, block_index: int | None = None,):
+def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     return model_parts.TransformerBlock(sublayers=[
         pz.nn.Residual(AdaLN.wrap_with_config(
             config=config,
@@ -228,13 +231,18 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             ),
         ),
         pz.nn.CastToDType(dtype=config.activation_dtype),
-        pz.nn.LayerStack.from_sublayer_builder(
-            builder=build_dit_block,
-            stack_axis="blocks",
-            stack_axis_size=config.n_layers,
+        build_dit_block(
+            name=f"{name}/block_0",
             init_base_rng=init_base_rng,
-            builder_kwargs=dict(name=f"{name}/blocks", config=config),
+            config=config,
         ),
+        # pz.nn.LayerStack.from_sublayer_builder(
+        #     builder=build_dit_block,
+        #     stack_axis="blocks",
+        #     stack_axis_size=config.n_layers,
+        #     init_base_rng=init_base_rng,
+        #     builder_kwargs=dict(name=f"{name}/blocks", config=config),
+        # ),
         AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,

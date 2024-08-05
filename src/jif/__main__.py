@@ -16,12 +16,12 @@ from .diffusion import MDLMDiffusion
 
 
 def main(
-    batch_size = 128,
+    batch_size = 256,
     seq_len = 64,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
     n_steps=100_000,
-    lr=1e-4,
+    lr=1e-3,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config
@@ -66,14 +66,17 @@ def main(
         initial_loss_fn_state=dict(ema=[x.value.unwrap(*x.value.named_shape.keys()).copy() for x in pz.unbind_params(model)[1]]),
         donate_states=True)
 
-    def get_samples(trainer_state, batch_size, seq_len, key, num_steps=None):
+    @partial(pz.variable_jit, static_argnames=("batch_size", "seq_len", "num_steps"))
+    def get_samples(trainer, batch_size, seq_len, key, num_steps=None):
         if num_steps is None:
-            num_steps = seq_len * 2
-        ema_params = trainer_state.loss_fn_state["ema"]
-        ema_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
-        ema_treedef, param_types = pz.unbind_params(ema_model)
-        ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep, *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
-        ema_model = pz.bind_variables(ema_treedef, ema_params)
+            num_steps = seq_len * 4
+        # trainer_state = trainer.state.value
+        # ema_params = trainer_state.loss_fn_state["ema"]
+        # ema_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
+        # ema_treedef, param_types = pz.unbind_params(ema_model)
+        # ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep, *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
+        # ema_model = pz.bind_variables(ema_treedef, ema_params)
+        ema_model = trainer.model
         samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
         return samples
 
@@ -81,7 +84,7 @@ def main(
     old_sample = None
     for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len)):
         if old_sample is None:
-            old_sample = sample
+            old_sample = sample[:1] * len(sample)
         sample = old_sample
         sample = jnp.array(sample)
         out = trainer.step(sample=sample)
@@ -90,7 +93,7 @@ def main(
             wandb.log(dict(loss=out["loss"]), step=i)
         if i % 100 == 0:
             print(f"Sampling at step {i}...")
-            print(detokenize(get_samples(trainer.state.value, batch_size, seq_len, jax.random.key(i)).tolist()))
+            print(detokenize(get_samples(trainer, 4, seq_len, jax.random.key(i)).tolist()))
 
 
 if __name__ == "__main__":

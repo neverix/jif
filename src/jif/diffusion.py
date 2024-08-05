@@ -168,9 +168,8 @@ class MDLMDiffusion:
     def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x, use_caching=False):
         assert not use_caching
         x = jnp.full(batch_shape, self.n_classes)
-        timesteps = jnp.linspace(1, 0, n_steps + 1)
+        timesteps = jnp.linspace(1, 0, n_steps + (1 if denoise else 0))
         alphas = self.alpha(timesteps)
-        rates = self.alpha_rate(timesteps)
 
         def update(i, carry):
             key, x = carry
