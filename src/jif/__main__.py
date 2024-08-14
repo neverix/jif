@@ -17,7 +17,7 @@ from .diffusion import MDLMDiffusion
 
 def main(
     batch_size = 256,
-    seq_len = 64,
+    seq_len = 16,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
     n_steps=100_000,
@@ -85,9 +85,9 @@ def main(
     for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len)):
         if old_sample is None:
             old_sample = sample[:1] * len(sample)
+            # old_sample = sample
         sample = old_sample
-        sample = jnp.array(sample)
-        sample = jnp.full_like(sample, 65).at[..., seq_len // 2:].set(66).at[..., 0].set(67)
+        sample = jnp.array(sample).at[..., 0].set(240)
         out = trainer.step(sample=sample)
         if i % 2 == 0:
             bar.set_postfix(loss=out["loss"])

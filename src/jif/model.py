@@ -88,6 +88,15 @@ class AdaLN(pz.nn.Sequential):
         ] + ([AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_output", use_bias=False)] if scale_output else []))
 
 
+@pz.pytree_dataclass
+class DebugPrint(pz.nn.Layer):
+    def __call__(self, arg, **side_inputs):
+        import random
+        j = random.randrange(0, arg.named_shape["kv_heads"])
+        jax.debug.print("{}", arg[{"batch": 0, "q_rep": 0, "kv_heads": j}].unwrap("seq", "kv_seq"))
+        return arg
+
+
 def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     hidden_size = config.d_model
     num_heads = config.n_kv_heads
@@ -158,6 +167,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                 {"seq": "tq", "kv_heads": "h", "q_rep": "r", "kv_seq": "tkv"},
             ),
             pz.nn.Softmax("kv_seq"),
+            # DebugPrint(),
         ]),
         attn_value_to_output=pz.nn.Sequential([
             pz.nn.NamedEinsum(
