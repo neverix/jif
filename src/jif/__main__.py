@@ -33,10 +33,10 @@ def main(
     diffusion_eps = 1e-3,
     ema_decay=0.99,
     n_steps=100_000,
-    lr=2e-3,
+    lr=5e-4,
     bos_token=0,
     schedule_free=True,
-    b1=0.98,
+    b1=0.95,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config

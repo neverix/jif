@@ -2,6 +2,7 @@
 
 from typing import Literal, Optional
 from penzai.models.transformer import model_parts
+from penzai.nn.linear_and_affine import zero_initializer, constant_initializer
 from penzai import pz
 from typing import Literal, Optional
 import dataclasses
@@ -57,6 +58,8 @@ class AdaLNCondition(pz.nn.Layer):
             output_axes={"embedding": config.d_model},
             name=f"{name}/projection_scale",
             dtype=config.parameter_dtype,
+            linear_initializer=zero_initializer,
+            bias_initializer=constant_initializer(1.0),
         )
         bias_affine = None
         if use_bias:
@@ -66,6 +69,8 @@ class AdaLNCondition(pz.nn.Layer):
                 output_axes={"embedding": config.d_model},
                 name=f"{name}/projection_bias",
                 dtype=config.parameter_dtype,
+                linear_initializer=zero_initializer,
+                bias_initializer=zero_initializer,
             )
         return cls(
             projection_scale=scale_affine,

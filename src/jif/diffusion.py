@@ -149,9 +149,9 @@ class MDLMDiffusion:
             t = jnp.repeat(t[..., None], s, -1)
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
-        logits = self.process_logits(score_fn(self.replace_bos(data_perturbed), alpha))
+        logits = self.process_logits(score_fn(self.replace_bos(data_perturbed), alpha)).astype(jnp.float32)
         llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), self.replace_bos(data)[..., None], -1).squeeze(-1)
-        loss = ((rate / (1 - alpha)) * llh * (data_perturbed == self.n_classes))
+        loss = jnp.where(data_perturbed == self.n_classes, 0, (rate / (1 - alpha)) * llh)
         return loss
 
     def sample_transition(self, key, data, alpha):
