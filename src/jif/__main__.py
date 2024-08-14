@@ -17,11 +17,11 @@ from .diffusion import MDLMDiffusion
 
 def main(
     batch_size = 256,
-    seq_len = 16,
-    diffusion_eps = 1e-3,
+    seq_len = 8,
+    diffusion_eps = 1e-6,
     ema_decay=0.99,
     n_steps=100_000,
-    lr=1e-3,
+    lr=1e-4,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config

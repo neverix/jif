@@ -74,7 +74,7 @@ class AdaLNCondition(pz.nn.Layer):
 
     def __call__(self, arg, **side_inputs):
         cond = side_inputs["timestep_cond"]
-        return arg * self.projection_scale(cond) + self.projection_bias(cond) if self.projection_bias is not None else 0
+        return arg  # * self.projection_scale(cond) + (self.projection_bias(cond) if self.projection_bias is not None else 0)
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
