@@ -3,6 +3,7 @@
 from typing import Literal, Optional
 from penzai.models.transformer import model_parts
 from penzai import pz
+from typing import Literal, Optional
 import dataclasses
 import math
 import jax.numpy as jnp
@@ -18,13 +19,10 @@ class DiTConfig:
     n_layers: int = 6
     d_model: int = 512
 
-    # n_kv_heads: int = 4
-    n_kv_heads: int = 8
-    # q_rep: int = 2
-    q_rep: int = 1
+    n_kv_heads: int = 4
+    q_rep: int = 2
     qk_dim: int = 64
-    v_dim: int = 64
-    # v_dim: int = 128
+    v_dim: int = 128
 
     d_ff: int = 1024
     ff_act: Literal["gelu"] = "gelu"
@@ -53,28 +51,30 @@ class AdaLNCondition(pz.nn.Layer):
 
     @classmethod
     def from_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str, use_bias: bool = True):
-        return cls(
-            projection_scale=pz.nn.Affine.from_config(
+        scale_affine = pz.nn.Affine.from_config(
+            init_base_rng=init_base_rng,
+            input_axes={"cond_embedding": config.cond_dim},
+            output_axes={"embedding": config.d_model},
+            name=f"{name}/projection_scale",
+            dtype=config.parameter_dtype,
+        )
+        bias_affine = None
+        if use_bias:
+            bias_affine = pz.nn.Affine.from_config(
                 init_base_rng=init_base_rng,
                 input_axes={"cond_embedding": config.cond_dim},
                 output_axes={"embedding": config.d_model},
-                name=f"{name}/projection_scale",
+                name=f"{name}/projection_bias",
                 dtype=config.parameter_dtype,
-            ),
-            projection_bias=(
-                pz.nn.Affine.from_config(
-                    init_base_rng=init_base_rng,
-                    input_axes={"cond_embedding": config.cond_dim},
-                    output_axes={"embedding": config.d_model},
-                    name=f"{name}/projection_bias",
-                    dtype=config.parameter_dtype,
-                ) if use_bias else None
             )
+        return cls(
+            projection_scale=scale_affine,
+            projection_bias=bias_affine,
         )
 
     def __call__(self, arg, **side_inputs):
         cond = side_inputs["timestep_cond"]
-        return arg  # * self.projection_scale(cond) + (self.projection_bias(cond) if self.projection_bias is not None else 0)
+        return arg * self.projection_scale(cond) + (self.projection_bias(cond) if self.projection_bias is not None else 0)
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
@@ -294,6 +294,7 @@ def timestep_embedding(t, dim, max_period=10000):
 class DitWithTimestep(pz.nn.Layer):
     cond_dim: int = dataclasses.field(metadata={"pytree_node": False})
     freq_embed_dim: int = dataclasses.field(metadata={"pytree_node": False})
+    config: DiTConfig = dataclasses.field(metadata={"pytree_node": False})
     timestep_mlp: pz.nn.Layer
     model: pz.nn.Layer
 
@@ -313,7 +314,8 @@ class DitWithTimestep(pz.nn.Layer):
                                          output_axes={"cond_embedding": config.cond_dim},
                                          name=f"{name}/timestep_mlp/out_linear"),
             ]),
-            model=build_dit_model(config, init_base_rng=init_base_rng, name=name)
+            model=build_dit_model(config, init_base_rng=init_base_rng, name=name),
+            config=config,
         )
 
     def __call__(self, arg, **side_inputs):
@@ -323,9 +325,11 @@ class DitWithTimestep(pz.nn.Layer):
         return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond})
 
     @classmethod
-    def wrap_inputs(cls, x, mask, t=None):
+    def wrap_inputs(cls, x, mask_token, mask=None, t=None):
+        if mask is None:
+            mask = jnp.full_like(x, True)
         if t is None:
-            t = (x == mask).mean(axis=-1)
+            t = ((x == mask_token) & mask).mean(axis=-1)
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
         x = pz.nx.wrap(x, "batch", "seq")
         t = pz.nx.wrap(t, "batch")

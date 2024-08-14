@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 from functools import partial
 
 import jax
@@ -135,6 +136,12 @@ class AbsorbingDiffusion:
 class MDLMDiffusion:
     n_classes: int
     noise_eps: float = 1e-3
+    bos_token: Optional[int] = None
+    
+    def replace_bos(self, x):
+        if self.bos_token is not None:
+            x = x.at[..., 0].set(self.bos_token)
+        return x
 
     def get_loss(self, key, score_fn, data):
         t = jnp.linspace(1.0, 0.0, data.shape[0], dtype=jnp.float32)
@@ -142,8 +149,8 @@ class MDLMDiffusion:
             t = jnp.repeat(t[..., None], s, -1)
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
-        logits = self.process_logits(score_fn(data_perturbed, alpha))
-        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), data[..., None], -1).squeeze(-1)
+        logits = self.process_logits(score_fn(self.replace_bos(data_perturbed), alpha))
+        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), self.replace_bos(data)[..., None], -1).squeeze(-1)
         loss = ((rate / (1 - alpha)) * llh * (data_perturbed == self.n_classes))
         return loss
 
@@ -170,13 +177,14 @@ class MDLMDiffusion:
         x = jnp.full(batch_shape, self.n_classes)
         timesteps = jnp.linspace(1, 0, n_steps + (1 if denoise else 0))
         alphas = self.alpha(timesteps)
+        full_projector = lambda x: self.replace_bos(projector(x))
 
         def update(i, carry):
             key, x = carry
             key, subkey = jax.random.split(key)
             a_prev = jnp.full(x.shape, alphas[i])
             a_post = jnp.full(x.shape, alphas[i + 1])
-            x = projector(x)
+            x = full_projector(x)
             logits = self.process_logits(score_fn(x, a_prev))
             probs = jax.nn.softmax(logits, axis=-1)
             probs = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
@@ -186,7 +194,7 @@ class MDLMDiffusion:
 
         if denoise:
             # denoising step
-            x = projector(x)
+            x = full_projector(x)
             t = jnp.full(x.shape, alphas[-1])
             x = score_fn(x, t).argmax(-1)
-        return x
+        return full_projector(x)
