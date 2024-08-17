@@ -35,7 +35,7 @@ def main(
     batch_size=256,
     seq_len = 128,
     diffusion_eps = 1e-3,
-    ema_decay=0.99,
+    ema_decay=0.995,
     n_steps=100_000,
     lr=1e-3,
     n_classes = 258,
@@ -130,7 +130,7 @@ def main(
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
         root_rng=run_key,
         loss_fn=get_loss,
-        initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
+        initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).astype(jnp.float32).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
         donate_states=True)
 
     @partial(pz.variable_jit, static_argnames=("batch_size", "seq_len", "num_steps"))
@@ -143,7 +143,7 @@ def main(
             ema_params = trainer_state.loss_fn_state["ema"]
             ema_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
             ema_treedef, param_types = pz.unbind_params(ema_model)
-            ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep, *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
+            ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep.astype(config.parameter_dtype), *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
             ema_model = pz.bind_variables(ema_treedef, ema_params)
         else:
             optim_state = trainer_state.opt_state[-1]  # remove gradient processors

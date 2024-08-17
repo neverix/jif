@@ -10,12 +10,12 @@ def get_data(split="train"):
         if isinstance(x, list) and not isinstance(x[0], int):
             return list(map(detokenize, x))
         return bytes([min(c, 255) for c in x])
-    return detokenize, data_generator()
+    return detokenize, data_generator
 
 
-def collate(generator, batch_size, seq_len, pad_token_id=1, epochs=None):
+def collate(generator_fn, batch_size, seq_len, pad_token_id=1, epochs=None):
     for _ in (range(epochs) if epochs is not None else iter(int, 1)):
-        for batch in chunked(generator, batch_size):
+        for batch in chunked(generator_fn(), batch_size):
             if len(batch) < batch_size:
                 break
             batch = [text[:seq_len] for text in batch]
