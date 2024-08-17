@@ -15,8 +15,10 @@ def get_data(batch_size, seq_len, split="train", epochs=None):
         data = load_dataset("roneneldan/TinyStories", split=split)
         for epoch in (range(epochs) if epochs else iter(int, 1)):
             data.shuffle(seed=base_seed + epoch)
-            for text in chunked(data, batch_size):
-                encodings = tokenizer.encode_batch(["<|endoftext|>" + x["text"] for x in text])
+            for texts in chunked(data, batch_size):
+                if len(texts) < batch_size:
+                    continue
+                encodings = tokenizer.encode_batch(["<|endoftext|>" + x["text"] for x in texts])
                 for enc in encodings:
                     enc.truncate(seq_len)
                     enc.pad(seq_len, pad_id=pad_token)
