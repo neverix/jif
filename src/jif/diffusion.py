@@ -3,6 +3,7 @@ from typing import Optional
 from functools import partial
 
 import jax
+from jax.experimental import checkify
 import jax.numpy as jnp
 
 
@@ -144,6 +145,7 @@ class MDLMDiffusion:
             x = x.at[..., 0].set(self.bos_token)
         return x
 
+    @checkify.checkify
     def get_loss(self, key, score_fn, data):
         t = jnp.linspace(1.0, 0.0, data.shape[0], dtype=jnp.float32)
         for s in data.shape[1:]:
@@ -154,9 +156,14 @@ class MDLMDiffusion:
         logits = self.process_logits(score_fn(data_perturbed, alpha)).astype(jnp.float32)
         labels = self.replace_bos(data)[..., None]
         llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), labels, -1).squeeze(-1)
-        z_loss = jax.nn.logsumexp(logits, axis=-1) ** 2
-        loss = llh + self.z_loss_coeff * z_loss
-        loss = jnp.where(data_perturbed == self.n_classes, (rate / (1 - alpha)) * loss, 0)
+        z_loss = jnp.square(jax.nn.logsumexp(logits, axis=-1))
+        checkify.check(jnp.all(llh < 0), "llh must be negative")
+        checkify.check(jnp.all(z_loss >= 0), "z_loss must be non-negative")
+        checkify.check(jnp.all(jnp.isfinite(llh)), "llh must be finite")
+        checkify.check(jnp.all(jnp.isfinite(z_loss)), "z_loss must be finite")
+        gain = llh - self.z_loss_coeff * z_loss
+        weights = rate / (1 - alpha)
+        loss = jnp.where(data_perturbed == self.n_classes, weights * gain, 0)
         return loss
 
     def sample_transition(self, key, data, alpha):

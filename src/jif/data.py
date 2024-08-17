@@ -3,10 +3,9 @@ from more_itertools import chunked
 
 
 def get_data(split="train"):
-    print("Loading tinystories dataset...")
     def data_generator():
         for text in load_dataset("roneneldan/TinyStories", split=split):
-            yield list(text["text"].encode("utf-8"))
+            yield [0] + list(text["text"].encode("utf-8"))
     def detokenize(x):
         if isinstance(x, list) and not isinstance(x[0], int):
             return list(map(detokenize, x))
@@ -14,11 +13,12 @@ def get_data(split="train"):
     return detokenize, data_generator()
 
 
-def collate(generator, batch_size, seq_len, pad_token_id=1):
-    for batch in chunked(generator, batch_size):
-        batch = [text[:seq_len] for text in batch]
-        lengths = [len(text) for text in batch]
-        mask = [[1] * len(text) + [0] * (seq_len - len(text)) for text in batch]
-        batch = [text + [pad_token_id] * (seq_len - len(text)) for text in batch]
-        yield batch, lengths, mask
+def collate(generator, batch_size, seq_len, pad_token_id=1, epochs=None):
+    for _ in (range(epochs) if epochs is not None else iter(int, 1)):
+        for batch in chunked(generator, batch_size):
+            batch = [text[:seq_len] for text in batch]
+            lengths = [len(text) for text in batch]
+            mask = [[1] * len(text) + [0] * (seq_len - len(text)) for text in batch]
+            batch = [text + [pad_token_id] * (seq_len - len(text)) for text in batch]
+            yield batch, lengths, mask
 

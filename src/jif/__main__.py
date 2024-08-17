@@ -6,6 +6,7 @@ import jax
 import wandb
 import optax
 import jax.numpy as jnp
+from jax import sharding
 from jax.tree_util import GetAttrKey, SequenceKey, DictKey
 from penzai.toolshed import basic_training
 from penzai import pz
@@ -39,8 +40,9 @@ def main(
     pad_token=257,
     schedule_free=True,
     b1=0.9,
-    b2 = 0.999,
+    b2=0.98,
     warmup_steps=200,
+    n_mp=2,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config
@@ -65,6 +67,14 @@ def main(
         setattr(wandb_config, k, v)
 
     model = DitWithTimestep.from_config(config, jax.random.key(0))
+    sharding_util.name_to_name_sharding(
+        some_array_tree,
+        mesh,
+        axis_name_to_mesh_name={
+            "a": "bar",
+            "b": "foo",
+        },
+    )
     
     def score_fn(model, x, _t):
         mask = x == n_classes
@@ -82,8 +92,8 @@ def main(
         else:
             new_state = state
 
-        loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
-        return loss.mean(), new_state, {"loss": loss.mean()}
+        err, loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
+        return loss.mean(), new_state, {"loss": loss.mean(), "err": err}
 
     if not schedule_free:
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
@@ -127,6 +137,7 @@ def main(
     for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
         sample = jnp.array(sample)
         out = trainer.step(sample=sample)
+        out["err"].throw()
         if i % 2 == 0:
             bar.set_postfix(loss=out["loss"])
             wandb.log(dict(loss=out["loss"]), step=i)
