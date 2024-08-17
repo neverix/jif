@@ -1,19 +1,22 @@
-import fire
-from tqdm import trange
+import random
 from functools import partial
 
+import fire
 import jax
-import wandb
-import optax
 import jax.numpy as jnp
+import numpy as np
+import optax
 from jax import sharding
-from jax.tree_util import GetAttrKey, SequenceKey, DictKey
-from penzai.toolshed import basic_training
 from penzai import pz
+from penzai.models.transformer import model_parts
+from penzai.toolshed import basic_training, sharding_util
+from tqdm import trange
 
-from .model import DiTConfig, DitWithTimestep
+import wandb
+
 from .data import collate, get_data
 from .diffusion import MDLMDiffusion
+from .model import DiTConfig, DitWithTimestep
 
 
 def clone_schedule_free(optimizer):
@@ -29,7 +32,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size = 256,
+    batch_size=2048,
     seq_len = 128,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
@@ -42,14 +45,25 @@ def main(
     b1=0.9,
     b2=0.98,
     warmup_steps=200,
-    n_mp=2,
+    n_mp=1,
+    seed=0,
+    grad_clip_norm=10.0,
+    wandb_every=1,
+    sample_every=100,
 ):
+    random.seed(seed)
+    np.random.seed(seed)
+
     run = wandb.init(project="jif")
     wandb_config = run.config
 
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
-    config = DiTConfig(vocab_size=n_classes)
+    config = DiTConfig(vocab_size=n_classes,)
 
+    mesh = sharding.Mesh(np.array(jax.devices("tpu")).reshape((-1, n_mp)), ("dp", "mp"))
+
+    wandb_config.seed = seed
+    wandb_config.grad_clip_norm = grad_clip_norm
     wandb_config.warmup_steps = warmup_steps
     wandb_config.n_classes = n_classes
     wandb_config.bos_token = bos_token
@@ -63,18 +77,26 @@ def main(
     wandb_config.schedule_free = schedule_free
     wandb_config.b1 = b1
     wandb_config.b2 = b2
+    wandb_config.grad_clip_norm = grad_clip_norm
+    wandb_config.n_mp = n_mp
+    wandb_config.wandb_every = wandb_every
+    wandb_config.sample_every = sample_every
+    wandb_config.dp = mesh.shape["dp"]
     for k, v in config.__dict__.items():
         setattr(wandb_config, k, v)
 
-    model = DitWithTimestep.from_config(config, jax.random.key(0))
-    sharding_util.name_to_name_sharding(
-        some_array_tree,
-        mesh,
-        axis_name_to_mesh_name={
-            "a": "bar",
-            "b": "foo",
-        },
-    )
+    key = jax.random.key(seed)
+    model_key, run_key, sample_key = jax.random.split(key, 3)
+
+    data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
+    axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp"}
+    model = sharding_util.sharded_init(DitWithTimestep.from_config,
+                                       config, model_key,
+                                       mesh=mesh,
+                                       axis_name_to_mesh_name=axis_name_to_mesh_name)
+    model = (model.select().at_instances_of(pz.nn.Residual)
+             .insert_after(sharding_util.ConstrainShardingByName(
+                 mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)))
     
     def score_fn(model, x, _t):
         mask = x == n_classes
@@ -105,8 +127,8 @@ def main(
         ema_decay = None
     trainer = basic_training.StatefulTrainer.build(
         model=model,
-        optimizer_def=optax.chain(optax.clip_by_global_norm(1.0), optimizer),
-        root_rng=jax.random.key(0),
+        optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
+        root_rng=run_key,
         loss_fn=get_loss,
         initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
         donate_states=True)
@@ -134,16 +156,16 @@ def main(
         return samples
 
     detokenize, data_generator = get_data()
-    for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
-        sample = jnp.array(sample)
+    for step, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
+        sample = jnp.array(sample, device=data_sharding)
         out = trainer.step(sample=sample)
         out["err"].throw()
-        if i % 2 == 0:
+        if step % wandb_every == 0:
             bar.set_postfix(loss=out["loss"])
-            wandb.log(dict(loss=out["loss"]), step=i)
-        if i % 100 == 0:
-            print(f"Sampling at step {i}...")
-            print(detokenize(get_samples(trainer, 4, seq_len, jax.random.key(i)).tolist()))
+            wandb.log(dict(loss=out["loss"]), step=step)
+        if step % sample_every == 0:
+            print(f"Sampling at step {step}...")
+            print(detokenize(get_samples(trainer, 4, seq_len, jax.random.fold_in(sample_key, step)).tolist()))
 
 
 if __name__ == "__main__":

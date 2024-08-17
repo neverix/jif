@@ -1,15 +1,14 @@
 # based on https://github.com/neverix/Score-Entropy-Discrete-Diffusion/blob/main/model/transformer.py
 
-from typing import Literal, Optional
-from penzai.models.transformer import model_parts
-from penzai.nn.linear_and_affine import zero_initializer, constant_initializer
-from penzai import pz
-from typing import Literal, Optional
 import dataclasses
 import math
-import jax.numpy as jnp
-import jax
+from typing import Literal, Optional
 
+import jax
+import jax.numpy as jnp
+from penzai import pz
+from penzai.models.transformer import model_parts
+from penzai.nn.linear_and_affine import constant_initializer, zero_initializer
 
 ACT_FN_MAP = {"silu": jax.nn.silu, "gelu": jax.nn.gelu}
 
@@ -34,9 +33,10 @@ class DiTConfig:
 
     epsilon: float = 1e-5
     
-    act_dtype: str = "float32"
-    res_dtype: str = "float32"
-    param_dtype: str = "float32"
+    act_dtype: str = "bfloat16"
+    res_dtype: str = "bfloat16"
+    param_dtype: str = "bfloat16"
+    ln_dtype: str = "float32"
     rope_wavelength: float = 10_000.0
 
     @property
@@ -50,6 +50,10 @@ class DiTConfig:
     @property
     def parameter_dtype(self):
         return getattr(jnp, self.param_dtype)
+
+    @property
+    def layernorm_dtype(self):
+        return getattr(jnp, self.ln_dtype)
 
 
 @pz.pytree_dataclass
@@ -94,18 +98,18 @@ class AdaLN(pz.nn.Sequential):
     @classmethod
     def wrap_with_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str, child: pz.nn.Layer, scale_output: bool = True):
         return cls([
-            pz.nn.CastToDType(dtype=jnp.float32),
+            pz.nn.CastToDType(dtype=config.layernorm_dtype),
             pz.nn.RMSStandardize(across=("embedding",), epsilon=config.epsilon),
-            AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_input", use_bias=True),
             pz.nn.CastToDType(dtype=config.activation_dtype),
+            AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_input", use_bias=True),
             child,
         ] + ([AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_output", use_bias=False)] if scale_output else [])
-          + [pz.nn.CastToDType(dtype=jnp.float32)])
+          + [pz.nn.CastToDType(dtype=config.resid_dtype)])
 
 
 @pz.pytree_dataclass
 class DebugPrint(pz.nn.Layer):
-    def __call__(self, arg, **side_inputs):
+    def __call__(self, arg):
         import random
         j = random.randrange(0, arg.named_shape["kv_heads"])
         jax.debug.print("{}", arg[{"batch": 0, "q_rep": 0, "kv_heads": j}].unwrap("seq", "kv_seq"))
@@ -332,7 +336,7 @@ class DitWithTimestep(pz.nn.Layer):
     def __call__(self, arg, **side_inputs):
         t = side_inputs["timestep"]
         t_embed = timestep_embedding(t, self.freq_embed_dim)
-        timestep_cond = self.timestep_mlp(t_embed)
+        timestep_cond = self.timestep_mlp(t_embed).astype(self.config.parameter_dtype)
         return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond})
 
     @classmethod

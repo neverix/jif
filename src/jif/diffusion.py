@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 from typing import Optional
-from functools import partial
 
 import jax
-from jax.experimental import checkify
 import jax.numpy as jnp
+from jax.experimental import checkify
 
 
 @dataclass
