@@ -185,12 +185,12 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                 ),
                 {"seq": "tq", "kv_heads": "h", "q_rep": "r", "kv_seq": "tkv"},
             ),
-            pz.nn.ApplyExplicitAttentionMask(
-                mask_input_name="attention_mask",
-                masked_out_value=jnp.array(
-                    jnp.finfo(config.activation_dtype).min, dtype=config.activation_dtype
-                ),
-            ),
+            # pz.nn.ApplyExplicitAttentionMask(
+            #     mask_input_name="attention_mask",
+            #     masked_out_value=jnp.array(
+            #         jnp.finfo(config.activation_dtype).min, dtype=config.activation_dtype
+            #     ),
+            # ),
             pz.nn.Softmax("kv_seq"),
             # DebugPrint(),
         ]),
@@ -346,16 +346,13 @@ class DitWithTimestep(pz.nn.Layer):
         return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond})
 
     @classmethod
-    def wrap_inputs(cls, x, mask_token, mask=None, t=None):
-        if mask is None:
-            mask = jnp.full_like(x, True)
+    def wrap_inputs(cls, x, mask_token, t=None):
         if t is None:
-            t = ((x == mask_token) & mask).mean(axis=-1) / jnp.mean(mask, axis=-1)
+            t = (x == mask_token).mean(axis=-1)
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
         x = pz.nx.wrap(x, "batch", "seq")
         t = pz.nx.wrap(t, "batch")
-        attention_mask = pz.nx.wrap(mask, "batch", "seq")
-        return x, dict(timestep=t, positions=positions, attention_mask=attention_mask)
+        return x, dict(timestep=t, positions=positions)
 
 
 if __name__ == "__main__":

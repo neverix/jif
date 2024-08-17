@@ -124,7 +124,6 @@ def main(
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
         optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
         optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
-        ema_decay = None
     trainer = basic_training.StatefulTrainer.build(
         model=model,
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
@@ -139,17 +138,18 @@ def main(
             num_steps = sample_steps
         trainer_state = trainer.state.value
         model = trainer.model
+        if schedule_free:
+            optim_state = trainer_state.opt_state[-1]  # remove gradient processors
+            treedef, params = pz.unbind_params(model, freeze=True)
+            model_params = optax.contrib.schedule_free_eval_params(optim_state, params)
+            model = pz.bind_variables(treedef, model_params)
+        
         if ema_decay is not None:
             ema_params = trainer_state.loss_fn_state["ema"]
             ema_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
             ema_treedef, param_types = pz.unbind_params(ema_model)
             ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep.astype(config.parameter_dtype), *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
             ema_model = pz.bind_variables(ema_treedef, ema_params)
-        else:
-            optim_state = trainer_state.opt_state[-1]  # remove gradient processors
-            ema_treedef, params = pz.unbind_params(model, freeze=True)
-            ema_model_params = optax.contrib.schedule_free_eval_params(optim_state, params)
-            ema_model = pz.bind_variables(ema_treedef, ema_model_params)
 
         samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
         return samples
