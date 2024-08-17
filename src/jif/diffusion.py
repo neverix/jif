@@ -189,23 +189,27 @@ class MDLMDiffusion:
         timesteps = jnp.linspace(1, 0, n_steps + (1 if denoise else 0))
         alphas = self.alpha(timesteps)
         full_projector = lambda x: self.replace_bos(projector(x))
+        x = full_projector(x)
 
         def update(i, carry):
-            key, x = carry
+            key, x, last_probs, was_updated = carry
             key, subkey = jax.random.split(key)
             a_prev = jnp.full(x.shape, alphas[i])
             a_post = jnp.full(x.shape, alphas[i + 1])
-            x = full_projector(x)
-            logits = self.process_logits(score_fn(x, a_prev))
-            probs = jax.nn.softmax(logits, axis=-1)
-            probs = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
-            x = jax.random.categorical(subkey, jnp.log(1e-10 + probs))
-            return key, x
-        key, x = jax.lax.fori_loop(0, n_steps, update, (key, x))
+            def compute_probs():
+                logits = self.process_logits(score_fn(x, a_prev))
+                probs = jax.nn.softmax(logits, axis=-1)
+                return probs
+            # TODO any way to bucket at large batch sizes?
+            probs = jax.lax.switch(was_updated.any().astype(jnp.uint8), (lambda: last_probs, compute_probs))
+            probs_full = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
+            new_x = jnp.where(x == self.n_classes, jax.random.categorical(subkey, jnp.log(1e-10 + probs_full)), x)
+            new_x = full_projector(new_x)
+            return key, new_x, probs, new_x != x
+        key, x, _, _ = jax.lax.fori_loop(0, n_steps, update, (key, x, jnp.zeros(x.shape + (self.n_classes,), dtype=jnp.float32), jnp.ones(batch_shape, dtype=jnp.bool_)))
 
         if denoise:
             # denoising step
-            x = full_projector(x)
             t = jnp.full(x.shape, alphas[-1])
-            x = score_fn(x, t).argmax(-1)
+            x = jnp.where(x == self.n_classes, score_fn(x, t).argmax(-1), x)
         return full_projector(x)

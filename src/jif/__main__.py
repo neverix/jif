@@ -32,7 +32,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=512,
+    batch_size=256,
     seq_len = 128,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
@@ -41,10 +41,10 @@ def main(
     n_classes = 258,
     bos_token=256,
     pad_token=257,
-    schedule_free=True,
+    schedule_free=False,
     b1=0.9,
     b2=0.98,
-    warmup_steps=200,
+    warmup_steps=100,
     n_mp=1,
     seed=0,
     grad_clip_norm=10.0,
@@ -137,17 +137,16 @@ def main(
     def get_samples(trainer, batch_size, seq_len, key, num_steps=None):
         if num_steps is None:
             num_steps = seq_len * 16
+        trainer_state = trainer.state.value
+        model = trainer.model
         if ema_decay is not None:
-            trainer_state = trainer.state.value
             ema_params = trainer_state.loss_fn_state["ema"]
             ema_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
             ema_treedef, param_types = pz.unbind_params(ema_model)
             ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep, *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
             ema_model = pz.bind_variables(ema_treedef, ema_params)
         else:
-            trainer_state = trainer.state.value
             optim_state = trainer_state.opt_state[-1]  # remove gradient processors
-            model = trainer.model
             ema_treedef, params = pz.unbind_params(model, freeze=True)
             ema_model_params = optax.contrib.schedule_free_eval_params(optim_state, params)
             ema_model = pz.bind_variables(ema_treedef, ema_model_params)

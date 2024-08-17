@@ -16,6 +16,8 @@ def get_data(split="train"):
 def collate(generator, batch_size, seq_len, pad_token_id=1, epochs=None):
     for _ in (range(epochs) if epochs is not None else iter(int, 1)):
         for batch in chunked(generator, batch_size):
+            if len(batch) < batch_size:
+                break
             batch = [text[:seq_len] for text in batch]
             lengths = [len(text) for text in batch]
             mask = [[1] * len(text) + [0] * (seq_len - len(text)) for text in batch]
