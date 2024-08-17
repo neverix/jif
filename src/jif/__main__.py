@@ -14,7 +14,7 @@ from tqdm import trange
 
 import wandb
 
-from .data import collate, get_data
+from .data import get_data
 from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
 
@@ -33,14 +33,11 @@ def clone_schedule_free(optimizer):
 
 def main(
     batch_size=256,
-    seq_len = 128,
+    seq_len=256,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
     n_steps=100_000,
     lr=1e-3,
-    n_classes = 258,
-    bos_token=256,
-    pad_token=257,
     schedule_free=False,
     b1=0.9,
     b2=0.98,
@@ -50,12 +47,15 @@ def main(
     grad_clip_norm=10.0,
     wandb_every=1,
     sample_every=100,
+    sample_steps=1024,
 ):
     random.seed(seed)
     np.random.seed(seed)
 
     run = wandb.init(project="jif")
     wandb_config = run.config
+
+    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
 
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes,)
@@ -66,8 +66,8 @@ def main(
     wandb_config.grad_clip_norm = grad_clip_norm
     wandb_config.warmup_steps = warmup_steps
     wandb_config.n_classes = n_classes
+    wandb_config.sample_steps = sample_steps
     wandb_config.bos_token = bos_token
-    wandb_config.pad_token = pad_token
     wandb_config.n_steps = n_steps
     wandb_config.lr = lr
     wandb_config.diffusion_eps = diffusion_eps
@@ -136,7 +136,7 @@ def main(
     @partial(pz.variable_jit, static_argnames=("batch_size", "seq_len", "num_steps"))
     def get_samples(trainer, batch_size, seq_len, key, num_steps=None):
         if num_steps is None:
-            num_steps = seq_len * 16
+            num_steps = sample_steps
         trainer_state = trainer.state.value
         model = trainer.model
         if ema_decay is not None:
@@ -154,8 +154,7 @@ def main(
         samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
         return samples
 
-    detokenize, data_generator = get_data()
-    for step, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
+    for step, sample in zip((bar := trange(n_steps)), data_generator()):
         sample = jnp.asarray(np.asarray(sample, dtype=np.uint32), device=data_sharding)
         out = trainer.step(sample=sample)
         out["err"].throw()
