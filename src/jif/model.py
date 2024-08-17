@@ -20,25 +20,32 @@ class DiTConfig:
     n_layers: int = 6
     d_model: int = 512
 
-    n_kv_heads: int = 4
-    q_rep: int = 2
+    n_kv_heads: int = 12
+    q_rep: int = 1
     qk_dim: int = 64
-    v_dim: int = 128
+    v_dim: int = 64
 
-    d_ff: int = 1024
+    d_ff: int = 1536
     ff_act: Literal["gelu"] = "gelu"
 
-    cond_dim: int = 256
-    freq_embed_dim: int = 256
+    cond_dim: int = 128
+    freq_embed_dim: int = 128
     time_act: Literal["silu"] = "silu"
+
+    epsilon: float = 1e-5
     
     act_dtype: str = "float32"
+    res_dtype: str = "float32"
     param_dtype: str = "float32"
     rope_wavelength: float = 10_000.0
 
     @property
     def activation_dtype(self):
         return getattr(jnp, self.act_dtype)
+
+    @property
+    def resid_dtype(self):
+        return getattr(jnp, self.res_dtype)
 
     @property
     def parameter_dtype(self):
@@ -87,10 +94,13 @@ class AdaLN(pz.nn.Sequential):
     @classmethod
     def wrap_with_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str, child: pz.nn.Layer, scale_output: bool = True):
         return cls([
-            pz.nn.RMSStandardize(across=("embedding",), epsilon=1e-6),
+            pz.nn.CastToDType(dtype=jnp.float32),
+            pz.nn.RMSStandardize(across=("embedding",), epsilon=config.epsilon),
             AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_input", use_bias=True),
+            pz.nn.CastToDType(dtype=config.activation_dtype),
             child,
-        ] + ([AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_output", use_bias=False)] if scale_output else []))
+        ] + ([AdaLNCondition.from_config(config, init_base_rng=init_base_rng, name=f"{name}/adaln_output", use_bias=False)] if scale_output else [])
+          + [pz.nn.CastToDType(dtype=jnp.float32)])
 
 
 @pz.pytree_dataclass
@@ -230,7 +240,7 @@ def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfi
             init_base_rng=init_base_rng,
             name=f"{name}/adaln_ff",
             child=build_dit_ff(name=f"{name}/ff", init_base_rng=init_base_rng, config=config),
-        ))
+        )),
     ])
 
 
@@ -245,19 +255,15 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
                 dtype=config.parameter_dtype,
             ),
         ),
-        pz.nn.CastToDType(dtype=config.activation_dtype),
-        build_dit_block(
-            name=f"{name}/block_0",
+        pz.nn.CastToDType(dtype=config.resid_dtype),
+        pz.nn.LayerStack.from_sublayer_builder(
+            builder=build_dit_block,
+            stack_axis="blocks",
+            stack_axis_size=config.n_layers,
             init_base_rng=init_base_rng,
-            config=config,
+            builder_kwargs=dict(name=f"{name}/blocks", config=config),
         ),
-        # pz.nn.LayerStack.from_sublayer_builder(
-        #     builder=build_dit_block,
-        #     stack_axis="blocks",
-        #     stack_axis_size=config.n_layers,
-        #     init_base_rng=init_base_rng,
-        #     builder_kwargs=dict(name=f"{name}/blocks", config=config),
-        # ),
+        pz.nn.CastToDType(dtype=jnp.float32),
         AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
@@ -334,7 +340,7 @@ class DitWithTimestep(pz.nn.Layer):
         if mask is None:
             mask = jnp.full_like(x, True)
         if t is None:
-            t = ((x == mask_token) & mask).mean(axis=-1)
+            t = ((x == mask_token) & mask).mean(axis=-1) / jnp.mean(mask, axis=-1)
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
         x = pz.nx.wrap(x, "batch", "seq")
         t = pz.nx.wrap(t, "batch")

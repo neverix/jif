@@ -33,20 +33,25 @@ def main(
     diffusion_eps = 1e-3,
     ema_decay=0.99,
     n_steps=100_000,
-    lr=5e-4,
-    bos_token=0,
+    lr=1e-3,
+    n_classes = 258,
+    bos_token=256,
+    pad_token=257,
     schedule_free=True,
-    b1=0.95,
+    b1=0.9,
+    b2 = 0.999,
+    warmup_steps=200,
 ):
     run = wandb.init(project="jif")
     wandb_config = run.config
 
-    n_classes = 256
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes)
 
+    wandb_config.warmup_steps = warmup_steps
     wandb_config.n_classes = n_classes
     wandb_config.bos_token = bos_token
+    wandb_config.pad_token = pad_token
     wandb_config.n_steps = n_steps
     wandb_config.lr = lr
     wandb_config.diffusion_eps = diffusion_eps
@@ -55,6 +60,7 @@ def main(
     wandb_config.seq_len = seq_len
     wandb_config.schedule_free = schedule_free
     wandb_config.b1 = b1
+    wandb_config.b2 = b2
     for k, v in config.__dict__.items():
         setattr(wandb_config, k, v)
 
@@ -79,11 +85,12 @@ def main(
         loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
         return loss.mean(), new_state, {"loss": loss.mean()}
 
-    lr_fn = optax.warmup_cosine_decay_schedule(0, lr, 100, n_steps)
     if not schedule_free:
-        optimizer = optax.adamw(lr_fn)
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
+        optimizer = optax.adamw(lr_fn, b1=b1, b2=b2)
     else:
-        optimizer = optax.adamw(lr_fn, b1=0.)
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
+        optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
         optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
         ema_decay = None
     trainer = basic_training.StatefulTrainer.build(
@@ -117,7 +124,7 @@ def main(
         return samples
 
     detokenize, data_generator = get_data()
-    for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len)):
+    for i, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
         sample = jnp.array(sample)
         out = trainer.step(sample=sample)
         if i % 2 == 0:

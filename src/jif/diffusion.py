@@ -136,6 +136,7 @@ class AbsorbingDiffusion:
 class MDLMDiffusion:
     n_classes: int
     noise_eps: float = 1e-3
+    z_loss_coeff: float = 1e-4
     bos_token: Optional[int] = None
     
     def replace_bos(self, x):
@@ -149,9 +150,13 @@ class MDLMDiffusion:
             t = jnp.repeat(t[..., None], s, -1)
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
-        logits = self.process_logits(score_fn(self.replace_bos(data_perturbed), alpha)).astype(jnp.float32)
-        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), self.replace_bos(data)[..., None], -1).squeeze(-1)
-        loss = jnp.where(data_perturbed == self.n_classes, 0, (rate / (1 - alpha)) * llh)
+        data_perturbed = self.replace_bos(data_perturbed)
+        logits = self.process_logits(score_fn(data_perturbed, alpha)).astype(jnp.float32)
+        labels = self.replace_bos(data)[..., None]
+        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), labels, -1).squeeze(-1)
+        z_loss = jax.nn.logsumexp(logits, axis=-1) ** 2
+        loss = llh + self.z_loss_coeff * z_loss
+        loss = jnp.where(data_perturbed == self.n_classes, (rate / (1 - alpha)) * loss, 0)
         return loss
 
     def sample_transition(self, key, data, alpha):
