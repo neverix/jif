@@ -156,7 +156,7 @@ class MDLMDiffusion:
         labels = self.replace_bos(data)[..., None]
         llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), labels, -1).squeeze(-1)
         z_loss = jnp.square(jax.nn.logsumexp(logits, axis=-1))
-        checkify.check(jnp.all(llh < 0), "llh must be negative")
+        checkify.check(jnp.all(llh <= 0), "llh must be nonpositive")
         checkify.check(jnp.all(z_loss >= 0), "z_loss must be non-negative")
         checkify.check(jnp.all(jnp.isfinite(llh)), "llh must be finite")
         checkify.check(jnp.all(jnp.isfinite(z_loss)), "z_loss must be finite")

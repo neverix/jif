@@ -34,7 +34,7 @@ class DiTConfig:
     epsilon: float = 1e-5
     
     act_dtype: str = "bfloat16"
-    res_dtype: str = "bfloat16"
+    res_dtype: str = "float32"
     param_dtype: str = "bfloat16"
     ln_dtype: str = "float32"
     rope_wavelength: float = 10_000.0
@@ -184,6 +184,12 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                     {"seq": "tkv", "kv_heads": "h", "qk_dim": "p"},
                 ),
                 {"seq": "tq", "kv_heads": "h", "q_rep": "r", "kv_seq": "tkv"},
+            ),
+            pz.nn.ApplyExplicitAttentionMask(
+                mask_input_name="attention_mask",
+                masked_out_value=jnp.array(
+                    jnp.finfo(config.activation_dtype).min, dtype=config.activation_dtype
+                ),
             ),
             pz.nn.Softmax("kv_seq"),
             # DebugPrint(),
@@ -348,7 +354,8 @@ class DitWithTimestep(pz.nn.Layer):
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
         x = pz.nx.wrap(x, "batch", "seq")
         t = pz.nx.wrap(t, "batch")
-        return x, dict(timestep=t, positions=positions)
+        attention_mask = pz.nx.wrap(mask, "batch", "seq")
+        return x, dict(timestep=t, positions=positions, attention_mask=attention_mask)
 
 
 if __name__ == "__main__":

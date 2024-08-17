@@ -17,6 +17,7 @@ dependencies = [
     "wandb>=0.17.5",
     "jax[tpu]>=0.4.31",
     "optax>=0.2.3",
+    "rich>=13.7.1",
 ]
 
 

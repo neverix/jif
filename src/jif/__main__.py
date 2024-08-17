@@ -32,7 +32,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=2048,
+    batch_size=512,
     seq_len = 128,
     diffusion_eps = 1e-3,
     ema_decay=0.99,
@@ -113,7 +113,7 @@ def main(
             new_state = {"ema": ema}
         else:
             new_state = state
-
+            
         err, loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
         return loss.mean(), new_state, {"loss": loss.mean(), "err": err}
 
@@ -157,7 +157,7 @@ def main(
 
     detokenize, data_generator = get_data()
     for step, (sample, _, _) in zip((bar := trange(n_steps)), collate(data_generator, batch_size, seq_len, pad_token_id=pad_token)):
-        sample = jnp.array(sample, device=data_sharding)
+        sample = jnp.asarray(np.asarray(sample, dtype=np.uint32), device=data_sharding)
         out = trainer.step(sample=sample)
         out["err"].throw()
         if step % wandb_every == 0:
