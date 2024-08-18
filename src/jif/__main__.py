@@ -25,10 +25,7 @@ def clone_schedule_free(optimizer):
         state = state._replace(z=jax.tree.map(lambda x: x.copy(), state.z))
         return state
 
-    def update_fn(*args, **kwargs):
-        return optimizer.update(*args, **kwargs)
-
-    return optax.GradientTransformation(init, update_fn)
+    return optax.GradientTransformation(init, optimizer.update)
 
 
 def main(
@@ -153,27 +150,36 @@ def main(
             ema_treedef, param_types = pz.unbind_params(ema_model)
             ema_params = [pz.ParameterValue(value=pz.nx.wrap(ep.astype(config.parameter_dtype), *pt.value.named_shape.keys()), label=pt.label,) for ep, pt in zip(ema_params, param_types)]
             ema_model = pz.bind_variables(ema_treedef, ema_params)
+        else:
+            ema_model = model
 
         samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
         return samples
 
+    slots = pz.unbind_variables(trainer.model)[0]
+    @partial(jax.jit, static_argnames=("update_state",), donate_argnums=(2,))
+    def get_loss_unbound(model_vars, rng, state, sample, update_state=True):
+        model = pz.bind_variables(slots, [v.unfreeze_as_copy() for v in model_vars])
+        return get_loss(model, rng, state, sample, update_state=update_state)
+    @partial(jax.jit, static_argnames=("update_state",))
+    @jax.grad
+    def get_loss_grad(*args, **kwargs):
+        return get_loss_unbound(*args, **kwargs)[0]
+
     model_flops = None
+    # loss_fn_state = jax.tree.map(lambda x: x.copy(), trainer.state.value.loss_fn_state)
     for step, sample in zip((bar := trange(n_steps)), data_generator()):
-        sample = jnp.asarray(np.asarray(sample, dtype=np.uint32), device=data_sharding)
+        sample = jax.device_put(jnp.asarray(np.asarray(sample, dtype=np.uint32), device=jax.devices("cpu")[0]), data_sharding)
         if model_flops is None:
-            model = trainer.model
-            slots, model_variables = pz.unbind_variables(model)
-            @partial(jax.jit, static_argnames=("update_state",))
-            def get_loss_unbound(model_vars, *args, **kwargs):
-                pz.bind_variables(slots, [v.unfreeze_as_copy() for v in model_vars])
-                return get_loss(model, *args, **kwargs)
-            loss_compiled = get_loss_unbound.lower([v.freeze() for v in model_variables],
+            model_variables = pz.unbind_variables(trainer.model)[1]
+            loss_compiled = get_loss_grad.lower([v.freeze() for v in model_variables],
                                            jax.random.key(0), None,
                                            sample=sample, update_state=False).compile()
             model_flops = loss_compiled.cost_analysis()[0]["flops"]
-            del model, slots, model_variables
+            del model, model_variables
             print("Model FLOPs:", model_flops)
         out = trainer.step(sample=sample)
+        # _, loss_fn_state, out = get_loss_unbound([v.freeze() for v in pz.unbind_variables(trainer.model)[1]], jax.random.key(0), loss_fn_state, sample=sample, update_state=True)
         out["err"].throw()
         if step % wandb_every == 0:
             bar.set_postfix(loss=out["loss"])

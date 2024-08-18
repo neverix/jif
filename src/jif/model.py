@@ -32,7 +32,7 @@ class DiTConfig:
     time_act: Literal["silu"] = "silu"
 
     epsilon: float = 1e-5
-    
+
     act_dtype: str = "bfloat16"
     res_dtype: str = "bfloat16"
     param_dtype: str = "bfloat16"
