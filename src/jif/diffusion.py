@@ -197,7 +197,7 @@ class MDLMDiffusion:
             a_prev = jnp.full(x.shape, alphas[i])
             a_post = jnp.full(x.shape, alphas[i + 1])
             def compute_probs():
-                logits = self.process_logits(score_fn(x, a_prev))
+                logits = self.process_logits(score_fn(x, a_prev)).astype(jnp.float32)
                 probs = jax.nn.softmax(logits, axis=-1)
                 return probs
             # TODO any way to bucket at large batch sizes?

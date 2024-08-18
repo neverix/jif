@@ -32,7 +32,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=256,
+    batch_size=512,
     seq_len=256,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
@@ -48,6 +48,7 @@ def main(
     wandb_every=1,
     sample_every=100,
     sample_steps=1024,
+    ema_dtype="bfloat16",
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -78,12 +79,14 @@ def main(
     wandb_config.b1 = b1
     wandb_config.b2 = b2
     wandb_config.grad_clip_norm = grad_clip_norm
-    wandb_config.n_mp = n_mp
     wandb_config.wandb_every = wandb_every
     wandb_config.sample_every = sample_every
     wandb_config.dp = mesh.shape["dp"]
+    wandb_config.mp = mesh.shape["mp"]
+    wandb_config.ema_dtype = ema_dtype
     for k, v in config.__dict__.items():
         setattr(wandb_config, k, v)
+    ema_dtype = getattr(jnp, ema_dtype)
 
     key = jax.random.key(seed)
     model_key, run_key, sample_key = jax.random.split(key, 3)
@@ -104,8 +107,8 @@ def main(
         y = model(x, **side_inputs)
         return y.unwrap("batch", "seq", "vocabulary")
 
-    def get_loss(model, rng, state, sample):
-        if ema_decay is not None:
+    def get_loss(model, rng, state, sample, update_state=True):
+        if ema_decay is not None and update_state:
             ema = state["ema"]
             unfrozen_model = jax.tree.map(lambda x: x.unfreeze_as_copy() if isinstance(x, pz.ParameterValue) else x, model, is_leaf=lambda x: isinstance(x, pz.ParameterValue))
             new_params = [x.value.unwrap(*x.value.named_shape.keys()) for x in pz.unbind_params(unfrozen_model)[1]]
@@ -129,7 +132,7 @@ def main(
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
         root_rng=run_key,
         loss_fn=get_loss,
-        initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).astype(jnp.float32).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
+        initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).astype(ema_dtype).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
         donate_states=True)
 
     @partial(pz.variable_jit, static_argnames=("batch_size", "seq_len", "num_steps"))
@@ -154,16 +157,37 @@ def main(
         samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
         return samples
 
+    model_flops = None
     for step, sample in zip((bar := trange(n_steps)), data_generator()):
         sample = jnp.asarray(np.asarray(sample, dtype=np.uint32), device=data_sharding)
+        if model_flops is None:
+            model = trainer.model
+            slots, model_variables = pz.unbind_variables(model)
+            @partial(jax.jit, static_argnames=("update_state",))
+            def get_loss_unbound(model_vars, *args, **kwargs):
+                pz.bind_variables(slots, [v.unfreeze_as_copy() for v in model_vars])
+                return get_loss(model, *args, **kwargs)
+            loss_compiled = get_loss_unbound.lower([v.freeze() for v in model_variables],
+                                           jax.random.key(0), None,
+                                           sample=sample, update_state=False).compile()
+            model_flops = loss_compiled.cost_analysis()[0]["flops"]
+            del model, slots, model_variables
+            print("Model FLOPs:", model_flops)
         out = trainer.step(sample=sample)
         out["err"].throw()
         if step % wandb_every == 0:
             bar.set_postfix(loss=out["loss"])
-            wandb.log(dict(loss=out["loss"]), step=step)
+            log_dict = dict(loss=out["loss"])
+            itps = bar.format_dict["rate"]
+            if itps is not None:
+                one_v4_chip_flops = 275 * 1e12  # https://cloud.google.com/tpu/docs/v4
+                total_flops = one_v4_chip_flops * len(jax.devices("tpu"))
+                log_dict["mfu"] = (itps * model_flops) / total_flops
+            wandb.log(log_dict, step=step)
         if step % sample_every == 0:
             print(f"Sampling at step {step}...")
             print(detokenize(get_samples(trainer, 4, seq_len, jax.random.fold_in(sample_key, step)).tolist()))
+        
 
 
 if __name__ == "__main__":

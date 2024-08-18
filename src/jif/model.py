@@ -34,9 +34,9 @@ class DiTConfig:
     epsilon: float = 1e-5
     
     act_dtype: str = "bfloat16"
-    res_dtype: str = "float32"
+    res_dtype: str = "bfloat16"
     param_dtype: str = "bfloat16"
-    ln_dtype: str = "float32"
+    ln_dtype: str = "bfloat16"
     rope_wavelength: float = 10_000.0
 
     @property
@@ -273,7 +273,6 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             init_base_rng=init_base_rng,
             builder_kwargs=dict(name=f"{name}/blocks", config=config),
         ),
-        pz.nn.CastToDType(dtype=jnp.float32),
         AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
