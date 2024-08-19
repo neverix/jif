@@ -261,13 +261,19 @@ def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfi
     ])])
 
 
+def pad_to(x: int, y: int):
+    return x + (y - x % y) % y
+
+UNEMBED_PAD = 256
 def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit_model"):
+    vocab_size_in = pad_to(config.vocab_size + 1, UNEMBED_PAD)
+    vocab_size_out = pad_to(config.vocab_size, UNEMBED_PAD)
     return pz.nn.Sequential([
         pz.nn.EmbeddingLookup(
             pz.nn.EmbeddingTable.from_config(
                 name=f"{name}/embedder",
                 init_base_rng=init_base_rng,
-                vocab_size=config.vocab_size + 1,
+                vocab_size=vocab_size_in,
                 embedding_axes={"embedding": config.d_model},
                 dtype=config.parameter_dtype,
             ),
@@ -288,7 +294,7 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
                 pz.nn.EmbeddingTable.from_config(
                     name=f"{name}/unembedder",
                     init_base_rng=init_base_rng,
-                    vocab_size=config.vocab_size + 1,
+                    vocab_size=vocab_size_out,
                     embedding_axes={"embedding": config.d_model},
                     dtype=config.parameter_dtype,
                 ),

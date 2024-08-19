@@ -185,8 +185,8 @@ class MDLMDiffusion:
         return jnp.full_like(_t, -(1 - self.noise_eps))
 
     def process_logits(self, logits):
-        logits = logits[..., :self.n_classes]
-        assert logits.shape[-1] == self.n_classes
+        logits = logits - (jnp.arange(logits.shape[-1], dtype=logits.dtype) >= self.n_classes).astype(logits.dtype) * 1e10
+        assert logits.shape[-1] >= self.n_classes + 1
         return logits
 
     # @partial(jax.jit, static_argnames=("use_caching", "denoise", "batch_shape", "n_steps"))
@@ -197,6 +197,9 @@ class MDLMDiffusion:
         alphas = self.alpha(timesteps)
         full_projector = lambda x: self.replace_bos(projector(x))
         x = full_projector(x)
+        
+        # we don't actually do this computation
+        vocab_size = score_fn(x, alphas[0]).shape[-1]
 
         def update(i, carry):
             key, x, last_probs, was_updated = carry
@@ -209,14 +212,14 @@ class MDLMDiffusion:
                 return probs
             # TODO any way to bucket at large batch sizes?
             probs = jax.lax.switch(was_updated.any().astype(jnp.uint8), (lambda: last_probs, compute_probs))
-            probs_full = jnp.concatenate((probs * (a_post - a_prev)[..., None], (1 - a_post)[..., None]), axis=-1) / (1 - a_prev)[..., None]
+            probs_full = (probs * (a_post - a_prev)[..., None]).at[..., self.n_classes].set(1 - a_post) / (1 - a_prev)[..., None]
             new_x = jnp.where(x == self.n_classes, jax.random.categorical(subkey, jnp.log(1e-10 + probs_full)), x)
             new_x = full_projector(new_x)
             return key, new_x, probs, new_x != x
-        key, x, _, _ = jax.lax.fori_loop(0, n_steps, update, (key, x, jnp.zeros(x.shape + (self.n_classes,), dtype=jnp.float32), jnp.ones(batch_shape, dtype=jnp.bool_)))
+        key, x, _, _ = jax.lax.fori_loop(0, n_steps, update, (key, x, jnp.zeros(x.shape + (vocab_size,), dtype=jnp.float32), jnp.ones(batch_shape, dtype=jnp.bool_)))
 
         if denoise:
             # denoising step
             t = jnp.full(x.shape, alphas[-1])
-            x = jnp.where(x == self.n_classes, score_fn(x, t).argmax(-1), x)
+            x = jnp.where(x == self.n_classes, self.process_logits(score_fn(x, t)).argmax(-1), x)
         return full_projector(x)
