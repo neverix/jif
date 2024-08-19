@@ -29,7 +29,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=512,
+    batch_size=2048,
     seq_len=256,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
@@ -89,7 +89,7 @@ def main(
     model_key, run_key, sample_key = jax.random.split(key, 3)
 
     data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
-    axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp"}
+    axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp", "vocabulary": "mp"}
     model = sharding_util.sharded_init(DitWithTimestep.from_config,
                                        config, model_key,
                                        mesh=mesh,
@@ -157,17 +157,13 @@ def main(
         return samples
 
     slots = pz.unbind_variables(trainer.model)[0]
-    @partial(jax.jit, static_argnames=("update_state",), donate_argnums=(2,))
-    def get_loss_unbound(model_vars, rng, state, sample, update_state=True):
-        model = pz.bind_variables(slots, [v.unfreeze_as_copy() for v in model_vars])
-        return get_loss(model, rng, state, sample, update_state=update_state)
     @partial(jax.jit, static_argnames=("update_state",))
     @jax.grad
-    def get_loss_grad(*args, **kwargs):
-        return get_loss_unbound(*args, **kwargs)[0]
+    def get_loss_grad(model_vars, rng, state, sample, update_state=True):
+        model = pz.bind_variables(slots, [v.unfreeze_as_copy() for v in model_vars])
+        return get_loss(model, rng, state, sample, update_state=update_state)[0]
 
     model_flops = None
-    # loss_fn_state = jax.tree.map(lambda x: x.copy(), trainer.state.value.loss_fn_state)
     for step, sample in zip((bar := trange(n_steps)), data_generator()):
         sample = jax.device_put(jnp.asarray(np.asarray(sample, dtype=np.uint32), device=jax.devices("cpu")[0]), data_sharding)
         if model_flops is None:
@@ -179,7 +175,6 @@ def main(
             del model, model_variables
             print("Model FLOPs:", model_flops)
         out = trainer.step(sample=sample)
-        # _, loss_fn_state, out = get_loss_unbound([v.freeze() for v in pz.unbind_variables(trainer.model)[1]], jax.random.key(0), loss_fn_state, sample=sample, update_state=True)
         out["err"].throw()
         if step % wandb_every == 0:
             bar.set_postfix(loss=out["loss"])

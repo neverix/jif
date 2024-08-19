@@ -237,8 +237,15 @@ def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     ])
 
 
+@pz.pytree_dataclass(has_implicitly_inherited_fields=True)
+class Checkpoint(pz.nn.Sequential):
+    @jax.checkpoint
+    def __call__(self, arg, **side_inputs):
+        return super().__call__(arg, **side_inputs)
+
+
 def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
-    return model_parts.TransformerBlock(sublayers=[
+    return Checkpoint([model_parts.TransformerBlock(sublayers=[
         pz.nn.Residual(AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
@@ -251,7 +258,7 @@ def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfi
             name=f"{name}/adaln_ff",
             child=build_dit_ff(name=f"{name}/ff", init_base_rng=init_base_rng, config=config),
         )),
-    ])
+    ])])
 
 
 def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit_model"):
@@ -277,12 +284,14 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             config=config,
             init_base_rng=init_base_rng,
             name=f"{name}/final_adaln",
-            child=pz.nn.Affine.from_config(
-                init_base_rng=init_base_rng,
-                input_axes={"embedding": config.d_model},
-                output_axes={"vocabulary": config.vocab_size},
-                name=f"{name}/unembedder",
-                dtype=config.parameter_dtype,
+            child=pz.nn.EmbeddingDecode(
+                pz.nn.EmbeddingTable.from_config(
+                    name=f"{name}/unembedder",
+                    init_base_rng=init_base_rng,
+                    vocab_size=config.vocab_size + 1,
+                    embedding_axes={"embedding": config.d_model},
+                    dtype=config.parameter_dtype,
+                ),
             ),
             scale_output=False
         )

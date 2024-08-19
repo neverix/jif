@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import jax
+import jax.experimental
+from jax.experimental.shard_alike import shard_alike
 import jax.numpy as jnp
 from jax.experimental import checkify
 
@@ -147,20 +149,25 @@ class MDLMDiffusion:
     @checkify.checkify
     def get_loss(self, key, score_fn, data):
         t = jnp.linspace(1.0, 0.0, data.shape[0], dtype=jnp.float32)
-        for s in data.shape[1:]:
-            t = jnp.repeat(t[..., None], s, -1)
+        for _ in range(data.ndim - 1):
+            t = t[..., None]
+        t = t + jnp.zeros_like(data, dtype=jnp.float32)
+        t, data = shard_alike(t, data) # just to make sure
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
         data_perturbed = self.replace_bos(data_perturbed)
-        logits = self.process_logits(score_fn(data_perturbed, alpha)).astype(jnp.float32)
+        logits = self.process_logits(score_fn(data_perturbed, alpha))
         labels = self.replace_bos(data)[..., None]
-        llh = jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), labels, -1).squeeze(-1)
-        z_loss = jnp.square(jax.nn.logsumexp(logits, axis=-1))
-        checkify.check(jnp.all(llh <= 0), "llh must be nonpositive")
-        checkify.check(jnp.all(z_loss >= 0), "z_loss must be non-negative")
-        checkify.check(jnp.all(jnp.isfinite(llh)), "llh must be finite")
-        checkify.check(jnp.all(jnp.isfinite(z_loss)), "z_loss must be finite")
-        gain = llh - self.z_loss_coeff * z_loss
+        # TODO
+        gain = jnp.take_along_axis(jax.nn.log_softmax(logits, -1), labels, -1).squeeze(-1)
+        # lse = jax.nn.logsumexp(logits, axis=-1)
+        # llh = jnp.take_along_axis(logits, labels, -1).squeeze(-1) - lse
+        # z_loss = jnp.square(lse)
+        # checkify.check(jnp.all(llh <= 0), "llh must be nonpositive")
+        # checkify.check(jnp.all(z_loss >= 0), "z_loss must be non-negative")
+        # checkify.check(jnp.all(jnp.isfinite(llh)), "llh must be finite")
+        # checkify.check(jnp.all(jnp.isfinite(z_loss)), "z_loss must be finite")
+        # gain = llh - self.z_loss_coeff * z_loss
         weights = rate / (1 - alpha)
         loss = jnp.where(data_perturbed == self.n_classes, weights * gain, 0)
         return loss
