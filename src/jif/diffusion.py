@@ -185,7 +185,7 @@ class MDLMDiffusion:
         return jnp.full_like(_t, -(1 - self.noise_eps))
 
     def process_logits(self, logits):
-        logits = logits - (jnp.arange(logits.shape[-1], dtype=logits.dtype) >= self.n_classes).astype(logits.dtype) * 1e10
+        logits = logits - (jnp.arange(logits.shape[-1], dtype=logits.dtype) >= self.n_classes) * 1e10
         assert logits.shape[-1] >= self.n_classes + 1
         return logits
 
