@@ -29,7 +29,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=2048,
+    batch_size=16384,
     seq_len=256,
     diffusion_eps = 1e-3,
     ema_decay=0.995,

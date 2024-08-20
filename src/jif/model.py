@@ -267,7 +267,7 @@ def pad_to(x: int, y: int):
 UNEMBED_PAD = 256
 def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit_model"):
     vocab_size_in = pad_to(config.vocab_size + 1, UNEMBED_PAD)
-    vocab_size_out = pad_to(config.vocab_size, UNEMBED_PAD)
+    vocab_size_out = pad_to(config.vocab_size + 1, UNEMBED_PAD)
     return pz.nn.Sequential([
         pz.nn.EmbeddingLookup(
             pz.nn.EmbeddingTable.from_config(
