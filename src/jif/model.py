@@ -22,7 +22,7 @@ class DiTConfig:
     n_layers: int = 6
     d_model: int = 512
 
-    n_kv_heads: int = 12
+    n_kv_heads: int = 8
     q_rep: int = 1
     qk_dim: int = 64
     v_dim: int = 64
@@ -41,6 +41,9 @@ class DiTConfig:
     param_dtype: str = "bfloat16"
     ln_dtype: str = "bfloat16"
     rope_wavelength: float = 10_000.0
+    
+    use_flash_attention: bool = False
+    stack_layers: bool = True
 
     axis_name_to_mesh_name: dict[str, str] = dataclasses.field(default_factory=dict)
     mesh: jax.sharding.Mesh | None = None
@@ -204,6 +207,17 @@ class FlashAttention(pz.nn.Attention):
     
         return output
 
+    @classmethod
+    def from_attn(cls, attn: pz.nn.Attention, **kwargs):
+        return cls(
+            input_to_query=attn.input_to_query,
+            input_to_key=attn.input_to_key,
+            input_to_value=attn.input_to_value,
+            query_key_to_attn=attn.query_key_to_attn,
+            attn_value_to_output=attn.attn_value_to_output,
+            **kwargs,
+        )
+
 
 def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     hidden_size = config.d_model
@@ -211,7 +225,7 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
     q_rep = config.q_rep
     qk_dim = config.qk_dim
     v_dim = config.v_dim
-    return FlashAttention(
+    attn = pz.nn.Attention(
         input_to_query=pz.nn.Sequential([
             pz.nn.Affine.from_config(
                 input_axes={"embedding": hidden_size},
@@ -283,12 +297,6 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             pz.nn.Softmax("kv_seq"),
             # DebugPrint(),
         ]),
-        softmax_axis="kv_seq",
-        head_axis="kv_heads",
-        seq_axis="seq",
-        kv_seq_axis="kv_seq",
-        qk_projection_axis="qk_dim",
-        v_projection_axis="v_dim",
         attn_value_to_output=pz.nn.Sequential([
             pz.nn.NamedEinsum(
                 (
@@ -310,6 +318,17 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             ),
         ]),
     )
+    if config.use_flash_attention:
+        return FlashAttention.from_attn(
+            attn,
+            softmax_axis="kv_seq",
+            head_axis="kv_heads",
+            seq_axis="seq",
+            kv_seq_axis="kv_seq",
+            qk_projection_axis="qk_dim",
+            v_projection_axis="v_dim",
+        )
+    return attn
 
 
 def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
@@ -374,6 +393,7 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             ),
         ),
         pz.nn.CastToDType(dtype=config.resid_dtype),
+    ] + ([
         pz.nn.LayerStack.from_sublayer_builder(
             builder=build_dit_block,
             stack_axis="blocks",
@@ -381,6 +401,12 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             init_base_rng=init_base_rng,
             builder_kwargs=dict(name=f"{name}/blocks", config=config),
         ),
+    ] if config.stack_layers else [
+        pz.nn.Sequential([
+            build_dit_block(name=f"{name}/blocks/{i}", init_base_rng=init_base_rng, config=config)
+            for i in range(config.n_layers)
+        ]),
+    ]) + [
         AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
