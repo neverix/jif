@@ -43,12 +43,11 @@ def main(
     n_mp=1,
     seed=0,
     grad_clip_norm=10.0,
-    wandb_every=50,
-    sample_every=100,
-    sample_steps=1024,
+    sample_steps=512,
     ema_dtype="bfloat16",
     accurate_flops_calc=False,
     profile=False,
+    size="small",
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -64,8 +63,28 @@ def main(
     mesh = sharding.Mesh(np.array(jax.devices("tpu")).reshape((-1, n_mp)), ("dp", "mp"))
     data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
     axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp", "vocabulary": "mp"}
-    config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh)
+    n_layers, d_model = {
+        "small": (3, 256),
+        "medium": (4, 384),
+        "big": (6, 512),
+    }[size]
+    batch_size = {
+        "small": 1024,
+        "medium": 512,
+        "big": 256,
+    }[size]
+    wandb_every, sample_every = {
+        "small": (100, 1000),
+        "medium": (50, 250),
+        "big": (10, 100),
+    }[size]
+    config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
+                       n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
+                       d_ff=d_model * 3)
 
+    wandb_config.size = size
+    wandb_config.n_layers = n_layers
+    wandb_config.d_model = d_model
     wandb_config.profile = profile
     wandb_config.seed = seed
     wandb_config.accurate_flops_calc = accurate_flops_calc
