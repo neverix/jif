@@ -2,13 +2,16 @@
 
 import dataclasses
 import math
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 
 import jax
 import jax.numpy as jnp
 from penzai import pz
 from penzai.models.transformer import model_parts
 from penzai.nn.linear_and_affine import constant_initializer, zero_initializer
+import jax.experimental.pallas.ops.tpu.flash_attention
+import jax.experimental.shard_map
+from jax.sharding import PartitionSpec as P
 
 ACT_FN_MAP = {"silu": jax.nn.silu, "gelu": jax.nn.gelu}
 
@@ -38,6 +41,9 @@ class DiTConfig:
     param_dtype: str = "bfloat16"
     ln_dtype: str = "bfloat16"
     rope_wavelength: float = 10_000.0
+
+    axis_name_to_mesh_name: dict[str, str] = dataclasses.field(default_factory=dict)
+    mesh: jax.sharding.Mesh | None = None
 
     @property
     def activation_dtype(self):
@@ -116,13 +122,96 @@ class DebugPrint(pz.nn.Layer):
         return arg
 
 
+
+def common_axes(*named_arrays):
+    shape = named_arrays[0].named_shape
+    for na in named_arrays[1:]:
+        for k, v in list(shape.items()):
+            if v != na.named_shape.get(k):
+                del shape[k]
+    return shape.keys()
+
+
+@pz.pytree_dataclass(has_implicitly_inherited_fields=True)
+class FlashAttention(pz.nn.Attention):
+    softmax_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    head_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    seq_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    kv_seq_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    qk_projection_axis: str = dataclasses.field(metadata={"pytree_node": False})
+    v_projection_axis: str = dataclasses.field(metadata={"pytree_node": False})
+
+    def __call__(
+        self, x: pz.nx.NamedArray, **side_inputs: Any
+    ) -> pz.nx.NamedArray:
+        query = self.input_to_query(x, **side_inputs)
+        key = self.input_to_key(x, **side_inputs)
+        value = self.input_to_value(x, **side_inputs)
+
+        out_proj = self.attn_value_to_output.select() \
+            .at_instances_of(pz.nn.Linear).pick_nth_selected(0).get()
+
+        axis_name_to_mesh_name = side_inputs["axis_name_to_mesh_name"]
+        mesh = side_inputs["mesh"]
+
+        batch_axes = list(set(common_axes(query, key, value))
+                          - {self.seq_axis, self.head_axis, self.qk_projection_axis, self.v_projection_axis})
+        q, k, v = (pz.nx.nmap(lambda x: x.flatten())(x.untag(*batch_axes)).tag("batch") for x in (query, key, value))
+        q, k = (x.untag("batch", self.head_axis, self.seq_axis, self.qk_projection_axis) for x in (q, k))
+        v = v.untag("batch", self.head_axis, self.seq_axis, self.v_projection_axis)
+        # attn_bias = pz.nx.nmap(lambda mv: (~mv) * self.mask_with)(self.mask_value.ask())
+        # batch_size, num_heads, *_ = q.positional_shape
+        # ab = pz.nx.nmap(lambda x:
+        #     jnp.repeat(jnp.repeat(x[None, None], batch_size, 0), num_heads, 1)
+        #     )(attn_bias).tag("batch", self.head_axis)
+        # ab = ab.untag("batch", self.head_axis, self.seq_axis, self.kv_seq_axis)
+
+        o = pz.nx.nmap(lambda q, k, v:  # , ab:
+            jax.experimental.shard_map.shard_map((
+                    lambda q, k, v:  # , ab:
+                        jax.experimental.pallas.ops.tpu.flash_attention.flash_attention(
+                            q, k, v, # ab=ab
+                        )
+                ),
+                mesh=mesh,
+                # TODO what to do with batch?
+                in_specs=(P(axis_name_to_mesh_name.get("batch"),
+                    axis_name_to_mesh_name.get(self.head_axis),
+                    axis_name_to_mesh_name.get(self.seq_axis),
+                    # splitting apart the projection dimension is just silly
+                    None),) * 3
+                # + (P(axis_name_to_mesh_name.get("batch"),
+                #      axis_name_to_mesh_name.get(self.head_axis),
+                #      # no KV seq split 😔
+                #      None,
+                #      axis_name_to_mesh_name.get(self.seq_axis)
+                #      ),)
+                ,
+                out_specs=P(axis_name_to_mesh_name.get("batch"),
+                    axis_name_to_mesh_name.get(self.head_axis),
+                    axis_name_to_mesh_name.get(self.seq_axis),
+                    None
+                ),
+                check_rep=False
+            )(q, k, v),  # , ab),
+        )(q, k, v)  #, ab)
+
+        output = o.tag("batch", self.head_axis, self.seq_axis, self.v_projection_axis)
+        output = out_proj(output)
+        
+        # attn = self.query_key_to_attn((query, key), **side_inputs)
+        # output = self.attn_value_to_output((attn, value), **side_inputs)
+    
+        return output
+
+
 def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
     hidden_size = config.d_model
     num_heads = config.n_kv_heads
     q_rep = config.q_rep
     qk_dim = config.qk_dim
     v_dim = config.v_dim
-    return pz.nn.Attention(
+    return FlashAttention(
         input_to_query=pz.nn.Sequential([
             pz.nn.Affine.from_config(
                 input_axes={"embedding": hidden_size},
@@ -194,6 +283,12 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             pz.nn.Softmax("kv_seq"),
             # DebugPrint(),
         ]),
+        softmax_axis="kv_seq",
+        head_axis="kv_heads",
+        seq_axis="seq",
+        kv_seq_axis="kv_seq",
+        qk_projection_axis="qk_dim",
+        v_projection_axis="v_dim",
         attn_value_to_output=pz.nn.Sequential([
             pz.nn.NamedEinsum(
                 (
@@ -245,7 +340,7 @@ class Checkpoint(pz.nn.Sequential):
 
 
 def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
-    return Checkpoint([model_parts.TransformerBlock(sublayers=[
+    return model_parts.TransformerBlock(sublayers=[
         pz.nn.Residual(AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
@@ -258,7 +353,7 @@ def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfi
             name=f"{name}/adaln_ff",
             child=build_dit_ff(name=f"{name}/ff", init_base_rng=init_base_rng, config=config),
         )),
-    ])])
+    ])
 
 
 def pad_to(x: int, y: int):
@@ -357,7 +452,10 @@ class DitWithTimestep(pz.nn.Layer):
         t = side_inputs["timestep"]
         t_embed = timestep_embedding(t, self.freq_embed_dim)
         timestep_cond = self.timestep_mlp(t_embed).astype(self.config.parameter_dtype)
-        return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond})
+        axis_name_to_mesh_name = self.config.axis_name_to_mesh_name
+        mesh = self.config.mesh
+        return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond,
+                                  "axis_name_to_mesh_name": axis_name_to_mesh_name, "mesh": mesh})
 
     @classmethod
     def wrap_inputs(cls, x, mask_token, t=None):

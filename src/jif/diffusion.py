@@ -146,7 +146,8 @@ class MDLMDiffusion:
             x = x.at[..., 0].set(self.bos_token)
         return x
 
-    @checkify.checkify
+    # checkify not supported by flash attention
+    # @checkify.checkify
     def get_loss(self, key, score_fn, data):
         t = jnp.linspace(1.0, 0.0, data.shape[0], dtype=jnp.float32)
         for _ in range(data.ndim - 1):

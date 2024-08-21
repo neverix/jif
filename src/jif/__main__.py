@@ -11,6 +11,7 @@ from penzai import pz
 from penzai.models.transformer import model_parts
 from penzai.toolshed import basic_training, sharding_util
 from tqdm import trange
+import torch
 
 import wandb
 
@@ -29,7 +30,7 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=16384,
+    batch_size=8192,
     seq_len=256,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
@@ -46,9 +47,12 @@ def main(
     sample_every=100,
     sample_steps=1024,
     ema_dtype="bfloat16",
+    accurate_flops_calc=False,
+    profile=True,
 ):
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
 
     run = wandb.init(project="jif")
     wandb_config = run.config
@@ -56,11 +60,15 @@ def main(
     data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
 
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
-    config = DiTConfig(vocab_size=n_classes,)
 
     mesh = sharding.Mesh(np.array(jax.devices("tpu")).reshape((-1, n_mp)), ("dp", "mp"))
+    data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
+    axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp", "vocabulary": "mp"}
+    config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh)
 
+    wandb_config.profile = profile
     wandb_config.seed = seed
+    wandb_config.accurate_flops_calc = accurate_flops_calc
     wandb_config.grad_clip_norm = grad_clip_norm
     wandb_config.warmup_steps = warmup_steps
     wandb_config.n_classes = n_classes
@@ -88,12 +96,12 @@ def main(
     key = jax.random.key(seed)
     model_key, run_key, sample_key = jax.random.split(key, 3)
 
-    data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
-    axis_name_to_mesh_name = {"batch": "dp", "neurons": "mp", "kv_heads": "mp", "vocabulary": "mp"}
     model = sharding_util.sharded_init(DitWithTimestep.from_config,
                                        config, model_key,
                                        mesh=mesh,
                                        axis_name_to_mesh_name=axis_name_to_mesh_name)
+    param_count = sum(v.value.data_array.size for v in pz.unbind_params(model)[1])
+    print(f"Parameter count: {param_count}")
     model = (model.select().at_instances_of(pz.nn.Residual)
              .insert_after(sharding_util.ConstrainShardingByName(
                  mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)))
@@ -114,7 +122,9 @@ def main(
         else:
             new_state = state
             
-        err, loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
+        # err, loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
+        loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
+        err = None
         return loss.mean(), new_state, {"loss": loss.mean(), "err": err}
 
     if not schedule_free:
@@ -165,17 +175,26 @@ def main(
 
     model_flops = None
     for step, sample in zip((bar := trange(n_steps)), data_generator()):
-        sample = jax.device_put(jnp.asarray(np.asarray(sample, dtype=np.uint32), device=jax.devices("cpu")[0]), data_sharding)
+        sample = jax.device_put(jnp.asarray(sample.numpy().astype(np.uint32), device=jax.devices("cpu")[0]), data_sharding)
         if model_flops is None:
-            model_variables = pz.unbind_variables(trainer.model)[1]
-            loss_compiled = get_loss_grad.lower([v.freeze() for v in model_variables],
-                                           jax.random.key(0), None,
-                                           sample=sample, update_state=False).compile()
-            model_flops = loss_compiled.cost_analysis()[0]["flops"]
-            del model, model_variables
+            if accurate_flops_calc:
+                model_variables = pz.unbind_variables(trainer.model)[1]
+                loss_compiled = get_loss_grad.lower([v.freeze() for v in model_variables],
+                                            jax.random.key(0), None,
+                                            sample=sample, update_state=False).compile()
+                model_flops = loss_compiled.cost_analysis()[0]["flops"]
+                del model, model_variables
+            else:
+                model_flops = batch_size * seq_len * 6 * param_count
             print("Model FLOPs:", model_flops)
+            print(f" (per token: {model_flops / seq_len / batch_size:.2f})")
+        if step == 5 and profile:
+            jax.profiler.start_trace("/tmp/tensorboard")
         out = trainer.step(sample=sample)
-        out["err"].throw()
+        if out.get("err") is not None:
+            out["err"].throw()
+        if step == 25 and profile:
+            jax.profiler.stop_trace()
         if step % wandb_every == 0:
             bar.set_postfix(loss=out["loss"])
             log_dict = dict(loss=out["loss"])
