@@ -1,18 +1,19 @@
+import json
+import random
+
+import requests
+import torch
 from datasets import load_dataset
 from more_itertools import chunked
 from tokenizers import Tokenizer
-from torch.utils.data import IterableDataset, DataLoader
-import requests
-import random
-import torch
-import json
+from torch.utils.data import DataLoader, IterableDataset
 
 
 class TSData(IterableDataset):
     def __init__(self, split="train",
                     seq_len=256,
                     epochs=None,
-                    n_tokens=2046,
+                    n_tokens=32_500,
                  ):
         self.seq_len = seq_len
         self.epochs = epochs

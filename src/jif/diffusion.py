@@ -3,9 +3,9 @@ from typing import Optional
 
 import jax
 import jax.experimental
-from jax.experimental.shard_alike import shard_alike
 import jax.numpy as jnp
 from jax.experimental import checkify
+from jax.experimental.shard_alike import shard_alike
 
 
 @dataclass

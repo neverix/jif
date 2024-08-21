@@ -6,12 +6,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import torch
 from jax import sharding
 from penzai import pz
 from penzai.models.transformer import model_parts
 from penzai.toolshed import basic_training, sharding_util
 from tqdm import trange
-import torch
 
 import wandb
 
@@ -30,8 +30,8 @@ def clone_schedule_free(optimizer):
 
 
 def main(
-    batch_size=2048,
-    seq_len=256,
+    batch_size=256,
+    seq_len=128,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
     n_steps=100_000,
@@ -43,12 +43,12 @@ def main(
     n_mp=1,
     seed=0,
     grad_clip_norm=10.0,
-    wandb_every=1,
+    wandb_every=50,
     sample_every=100,
     sample_steps=1024,
     ema_dtype="bfloat16",
     accurate_flops_calc=False,
-    profile=True,
+    profile=False,
 ):
     random.seed(seed)
     np.random.seed(seed)

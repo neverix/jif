@@ -2,16 +2,16 @@
 
 import dataclasses
 import math
-from typing import Literal, Optional, Any
+from typing import Any, Literal, Optional
 
 import jax
+import jax.experimental.pallas.ops.tpu.flash_attention
+import jax.experimental.shard_map
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P
 from penzai import pz
 from penzai.models.transformer import model_parts
 from penzai.nn.linear_and_affine import constant_initializer, zero_initializer
-import jax.experimental.pallas.ops.tpu.flash_attention
-import jax.experimental.shard_map
-from jax.sharding import PartitionSpec as P
 
 ACT_FN_MAP = {"silu": jax.nn.silu, "gelu": jax.nn.gelu}
 
