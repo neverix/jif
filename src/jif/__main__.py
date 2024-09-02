@@ -259,9 +259,11 @@ def main(*args, **kwargs):
         log_dict = train(*args, **kwargs | {"n_steps": 2_000, "lr": lr, "size": "small"},
                          quiet=True, profile=False)
         losses[model].append(log_dict["loss"])
+
         for model, color in zip(models, colors):
             plt.plot(lrs_sampled[model], losses[model], label=model, c=color)
-            plt.scatter(lrs_sampled[model], losses[model], label=model, marker="x", c=color)
+            plt.scatter(lrs_sampled[model], losses[model], marker="x", c=color)
+        plt.xlim(lrs[0], lrs[-1])
         plt.xlabel("Learning rate")
         plt.ylabel("Final loss")
         plt.legend()
@@ -270,4 +272,5 @@ def main(*args, **kwargs):
 
 
 if __name__ == "__main__":
+    # fire.Fire(train); exit()
     fire.Fire(main)
