@@ -246,7 +246,8 @@ def main(*args, **kwargs):
     from matplotlib import pyplot as plt
     from collections import defaultdict
     from itertools import product
-    lrs = np.linspace(1e-5, 2e-3, 10).tolist()
+    # lrs = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
+    lrs = np.exp(np.linspace(np.log(5e-4), np.log(3e-3), 10))
     models = ["small", "medium", "big"]
     colors = ["r", "g", "b"]
     lrs_sampled = defaultdict(list)
@@ -256,14 +257,14 @@ def main(*args, **kwargs):
     for lr, model in tqdm(all_configs):
         print("Training", model, "model with", lr, "learning rate")
         lrs_sampled[model].append(lr)
-        log_dict = train(*args, **kwargs | {"n_steps": 2_000, "lr": lr, "size": "small"},
+        log_dict = train(*args, **kwargs | {"n_steps": 2_000, "lr": lr, "size": model},
                          quiet=True, profile=False)
-        losses[model].append(log_dict["loss"])
+        losses[model].append(log_dict["loss_sma"])
 
         for model, color in zip(models, colors):
-            plt.plot(lrs_sampled[model], losses[model], label=model, c=color)
-            plt.scatter(lrs_sampled[model], losses[model], marker="x", c=color)
+            plt.scatter(lrs_sampled[model], losses[model], label=model, c=color)
         plt.xlim(lrs[0], lrs[-1])
+        plt.xscale("log")
         plt.xlabel("Learning rate")
         plt.ylabel("Final loss")
         plt.legend()
