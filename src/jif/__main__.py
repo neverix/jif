@@ -30,7 +30,7 @@ def clone_schedule_free(optimizer):
 
 
 def train(
-    batch_size=256,
+    batch_size=None,
     seq_len=128,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
@@ -49,6 +49,7 @@ def train(
     profile=False,
     size="small",
     quiet=False,
+    fix_batch_size=False,
 ):
     profile = profile and not quiet
     
@@ -56,9 +57,6 @@ def train(
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
-
-    diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
 
     mesh = sharding.Mesh(np.array(jax.devices("tpu")).reshape((-1, n_mp)), ("dp", "mp"))
     data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
@@ -68,16 +66,26 @@ def train(
         "medium": (4, 384),
         "big": (6, 512),
     }[size]
-    batch_size = {
-        "small": 1024,
-        "medium": 512,
-        "big": 256,
-    }[size]
+    if batch_size is None:
+        if fix_batch_size:
+            batch_size = {
+                "small": 256,
+                "medium": 256,
+                "big": 256,
+            }[size]
+        else:
+            batch_size = {
+                "small": 1024,
+                "medium": 512,
+                "big": 256,
+            }[size]
     wandb_every, sample_every = {
         "small": (100, 1000),
         "medium": (50, 250),
         "big": (10, 100),
     }[size]
+    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
+    diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
                        d_ff=d_model * 3)
@@ -242,18 +250,18 @@ def train(
     return log_dict
 
 
-def main(*args, **kwargs):
+def sweep(*args, min_lr, max_lr, out_name, **kwargs):
     from matplotlib import pyplot as plt
     from collections import defaultdict
     from itertools import product
-    # lrs = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
-    lrs = np.exp(np.linspace(np.log(5e-4), np.log(3e-3), 10))
+    lrs = np.exp(np.linspace(np.log(min_lr), np.log(max_lr), 10))
     models = ["small", "medium", "big"]
     colors = ["r", "g", "b"]
     lrs_sampled = defaultdict(list)
     losses = defaultdict(list)
     all_configs = list(product(lrs, models))
-    random.Random(0).shuffle(all_configs)
+    # random.Random(0).shuffle(all_configs)
+    random.shuffle(all_configs)
     for lr, model in tqdm(all_configs):
         print("Training", model, "model with", lr, "learning rate")
         lrs_sampled[model].append(lr)
@@ -263,15 +271,17 @@ def main(*args, **kwargs):
 
         for model, color in zip(models, colors):
             plt.scatter(lrs_sampled[model], losses[model], label=model, c=color)
+            lr, loss = zip(*sorted(zip(lrs_sampled[model], losses[model]), key=lambda x: x[0]))
+            plt.plot(lr, loss, c=color)
         plt.xlim(lrs[0], lrs[-1])
         plt.xscale("log")
         plt.xlabel("Learning rate")
         plt.ylabel("Final loss")
         plt.legend()
-        plt.savefig("lr_search.png")
+        plt.savefig(f"{out_name}.png")
         plt.close()
 
 
 if __name__ == "__main__":
-    # fire.Fire(train); exit()
-    fire.Fire(main)
+    # sweep(min_lr=7e-4, max_lr=3e-3, out_name="lr_batch_search")
+    sweep(min_lr=7e-4, max_lr=3e-3, out_name="lr_search", fix_batch_size=True)
