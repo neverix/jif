@@ -1,7 +1,6 @@
 import random
 from functools import partial
 
-import fire
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,7 +8,6 @@ import optax
 import torch
 from jax import sharding
 from penzai import pz
-from penzai.models.transformer import model_parts
 from penzai.toolshed import basic_training, sharding_util
 from tqdm.auto import tqdm, trange
 
@@ -50,6 +48,8 @@ def train(
     size="small",
     quiet=False,
     fix_batch_size=False,
+    loss_sma=256,
+    use_modula=False
 ):
     profile = profile and not quiet
     
@@ -88,7 +88,7 @@ def train(
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
-                       d_ff=d_model * 3)
+                       d_ff=d_model * 3, use_modula=use_modula)
 
     if not quiet:
         run = wandb.init(project="jif")
@@ -227,13 +227,14 @@ def train(
         if step == 5 and profile:
             jax.profiler.start_trace("/tmp/tensorboard")
         out = trainer.step(sample=sample)
-        losses.append(out["loss"])
         if out.get("err") is not None:
             out["err"].throw()
+        loss = float(out["loss"])
+        losses.append(loss)
         if step == 25 and profile:
             jax.profiler.stop_trace()
             
-        log_dict = dict(loss=out["loss"], loss_sma=np.mean(losses[-100:]))
+        log_dict = dict(loss=loss, loss_sma=np.mean(losses[-loss_sma:]))
         itps = bar.format_dict["rate"]
         if itps is not None and model_flops is not None:
             one_v4_chip_flops = 275 * 1e12  # https://cloud.google.com/tpu/docs/v4
@@ -265,14 +266,15 @@ def sweep(*args, min_lr, max_lr, out_name, **kwargs):
     for lr, model in tqdm(all_configs):
         print("Training", model, "model with", lr, "learning rate")
         lrs_sampled[model].append(lr)
-        log_dict = train(*args, **kwargs | {"n_steps": 2_000, "lr": lr, "size": model},
+        log_dict = train(*args, **kwargs | {"n_steps": 1_000, "lr": lr, "size": model},
                          quiet=True, profile=False)
         losses[model].append(log_dict["loss_sma"])
 
         for model, color in zip(models, colors):
             plt.scatter(lrs_sampled[model], losses[model], label=model, c=color)
-            lr, loss = zip(*sorted(zip(lrs_sampled[model], losses[model]), key=lambda x: x[0]))
-            plt.plot(lr, loss, c=color)
+            if losses[model]:
+                lr, loss = zip(*sorted(zip(lrs_sampled[model], losses[model]), key=lambda x: x[0]))
+                plt.plot(lr, loss, c=color)
         plt.xlim(lrs[0], lrs[-1])
         plt.xscale("log")
         plt.xlabel("Learning rate")
@@ -284,4 +286,4 @@ def sweep(*args, min_lr, max_lr, out_name, **kwargs):
 
 if __name__ == "__main__":
     # sweep(min_lr=7e-4, max_lr=3e-3, out_name="lr_batch_search")
-    sweep(min_lr=7e-4, max_lr=3e-3, out_name="lr_search", fix_batch_size=True)
+    sweep(min_lr=5e-4, max_lr=5e-3, out_name="lr_search", fix_batch_size=True)

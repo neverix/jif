@@ -13,6 +13,8 @@ from penzai import pz
 from penzai.models.transformer import model_parts
 from penzai.nn.linear_and_affine import constant_initializer, zero_initializer
 
+from .modula import modularize
+
 ACT_FN_MAP = {"silu": jax.nn.silu, "gelu": jax.nn.gelu}
 
 
@@ -47,6 +49,8 @@ class DiTConfig:
 
     axis_name_to_mesh_name: dict[str, str] = dataclasses.field(default_factory=dict)
     mesh: jax.sharding.Mesh | None = None
+
+    use_modula: bool = False
 
     @property
     def activation_dtype(self):
@@ -456,7 +460,7 @@ class DitWithTimestep(pz.nn.Layer):
 
     @classmethod
     def from_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit"):
-        return cls(
+        model = cls(
             cond_dim=config.cond_dim,
             freq_embed_dim=config.freq_embed_dim,
             timestep_mlp=pz.nn.Sequential([
@@ -473,6 +477,9 @@ class DitWithTimestep(pz.nn.Layer):
             model=build_dit_model(config, init_base_rng=init_base_rng, name=name),
             config=config,
         )
+        if config.use_modula:
+            model = modularize(model)
+        return model
 
     def __call__(self, arg, **side_inputs):
         t = side_inputs["timestep"]
