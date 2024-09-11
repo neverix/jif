@@ -49,6 +49,7 @@ def train(
     quiet=False,
     fix_batch_size=False,
     loss_sma=256,
+    dit_conditioning=False,
     use_modula=False
 ):
     profile = profile and not quiet
@@ -56,7 +57,6 @@ def train(
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
 
     mesh = sharding.Mesh(np.array(jax.devices("tpu")).reshape((-1, n_mp)), ("dp", "mp"))
     data_sharding = sharding.NamedSharding(mesh, sharding.PartitionSpec("dp", None))
@@ -88,7 +88,7 @@ def train(
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
-                       d_ff=d_model * 3, use_modula=use_modula)
+                       d_ff=d_model * 3, use_modula=use_modula, dit_conditioning=dit_conditioning)
 
     if not quiet:
         run = wandb.init(project="jif")
@@ -120,6 +120,7 @@ def train(
         wandb_config.dp = mesh.shape["dp"]
         wandb_config.mp = mesh.shape["mp"]
         wandb_config.ema_dtype = ema_dtype
+        wandb_config.dit_conditioning = dit_conditioning
         for k, v in config.__dict__.items():
             setattr(wandb_config, "model." + k, v)
 

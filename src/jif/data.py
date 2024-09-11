@@ -3,8 +3,8 @@ import random
 
 import requests
 import torch
+import numpy as np
 from datasets import load_dataset
-from more_itertools import chunked
 from tokenizers import Tokenizer
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -57,8 +57,18 @@ class TSData(IterableDataset):
 
 def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=2046):
     data = TSData(split=split, seq_len=seq_len, epochs=epochs, n_tokens=n_tokens)
+    worker_seed = random.randrange(0, 2**32)
+    generator_seed = random.randrange(0, 2**32)
     def data_generator():
-        return DataLoader(data, batch_size=batch_size, num_workers=8, pin_memory=True, drop_last=True, prefetch_factor=2)
+        def seed_worker(worker_id):
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+
+        g = torch.Generator()
+        g.manual_seed(generator_seed)
+        return DataLoader(data, batch_size=batch_size, num_workers=8, pin_memory=True, drop_last=True, prefetch_factor=2,
+                          worker_init_fn=seed_worker,
+                          generator=g,)
     def detokenize(x):
         return data.tokenizer.decode_batch(x)
     return data_generator, detokenize, data.n_classes, data.bos_token

@@ -35,6 +35,7 @@ class DiTConfig:
     cond_dim: int = 128
     freq_embed_dim: int = 128
     time_act: Literal["silu"] = "silu"
+    dit_conditioning: bool = True
 
     epsilon: float = 1e-5
 
@@ -71,39 +72,74 @@ class DiTConfig:
 
 @pz.pytree_dataclass
 class AdaLNCondition(pz.nn.Layer):
-    projection_scale: pz.nn.Affine
-    projection_bias: Optional[pz.nn.Affine]
+    projection_scale: pz.nn.Affine | pz.nn.Linear
+    projection_bias: Optional[pz.nn.Affine] | pz.nn.AddBias
+    dit_conditioning: bool = dataclasses.field(metadata={"pytree_node": False})
 
     @classmethod
     def from_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str, use_bias: bool = True):
-        scale_affine = pz.nn.Affine.from_config(
-            init_base_rng=init_base_rng,
-            input_axes={"cond_embedding": config.cond_dim},
-            output_axes={"embedding": config.d_model},
-            name=f"{name}/projection_scale",
-            dtype=config.parameter_dtype,
-            linear_initializer=zero_initializer,
-            bias_initializer=constant_initializer(1.0),
-        )
-        bias_affine = None
-        if use_bias:
-            bias_affine = pz.nn.Affine.from_config(
+        if config.dit_conditioning:
+            scale_affine = pz.nn.Affine.from_config(
                 init_base_rng=init_base_rng,
                 input_axes={"cond_embedding": config.cond_dim},
                 output_axes={"embedding": config.d_model},
-                name=f"{name}/projection_bias",
+                name=f"{name}/projection_scale",
                 dtype=config.parameter_dtype,
                 linear_initializer=zero_initializer,
-                bias_initializer=zero_initializer,
+                bias_initializer=constant_initializer(1.0),
             )
-        return cls(
-            projection_scale=scale_affine,
-            projection_bias=bias_affine,
-        )
+            bias_affine = None
+            if use_bias:
+                bias_affine = pz.nn.Affine.from_config(
+                    init_base_rng=init_base_rng,
+                    input_axes={"cond_embedding": config.cond_dim},
+                    output_axes={"embedding": config.d_model},
+                    name=f"{name}/projection_bias",
+                    dtype=config.parameter_dtype,
+                    linear_initializer=zero_initializer,
+                    bias_initializer=zero_initializer,
+                )
+            return cls(
+                projection_scale=scale_affine,
+                projection_bias=bias_affine,
+                dit_conditioning=True,
+            )
+        else:
+            scale = pz.nn.Linear.from_config(
+                name=f"{name}/scale",
+                init_base_rng=init_base_rng,
+                input_axes={},
+                output_axes={},
+                parallel_axes={"embedding": config.d_model},
+                initializer=constant_initializer(1.0),
+                dtype=config.parameter_dtype,
+            )
+            bias = None
+            if use_bias:
+                bias = pz.nn.AddBias.from_config(
+                    name=f"{name}/bias",
+                    init_base_rng=init_base_rng,
+                    biased_axes={"embedding": config.d_model},
+                    initializer=zero_initializer,
+                    dtype=config.parameter_dtype,
+                )
+            return cls(
+                projection_scale=scale,
+                projection_bias=bias,
+                dit_conditioning=False,
+            )
 
     def __call__(self, arg, **side_inputs):
-        cond = side_inputs["timestep_cond"]
-        return arg * self.projection_scale(cond) + (self.projection_bias(cond) if self.projection_bias is not None else 0)
+        if self.dit_conditioning:
+            cond = side_inputs["timestep_cond"]
+            x = arg * self.projection_scale(cond)
+            if self.projection_bias is not None:
+                x += self.projection_bias(cond)
+        else:
+            x = self.projection_scale(arg)
+            if self.projection_bias is not None:
+                x = self.projection_bias(arg)
+        return x
 
 
 @pz.pytree_dataclass(has_implicitly_inherited_fields=True)
@@ -455,11 +491,15 @@ class DitWithTimestep(pz.nn.Layer):
     cond_dim: int = dataclasses.field(metadata={"pytree_node": False})
     freq_embed_dim: int = dataclasses.field(metadata={"pytree_node": False})
     config: DiTConfig = dataclasses.field(metadata={"pytree_node": False})
+    dit_conditioning: bool = dataclasses.field(metadata={"pytree_node": False})
     timestep_mlp: pz.nn.Layer
     model: pz.nn.Layer
 
     @classmethod
     def from_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit"):
+        model = build_dit_model(config, init_base_rng=init_base_rng, name=name)
+        if not config.dit_conditioning:
+            return cls(model=model, config=config, dit_conditioning=False)
         model = cls(
             cond_dim=config.cond_dim,
             freq_embed_dim=config.freq_embed_dim,
@@ -474,30 +514,32 @@ class DitWithTimestep(pz.nn.Layer):
                                          output_axes={"cond_embedding": config.cond_dim},
                                          name=f"{name}/timestep_mlp/out_linear"),
             ]),
-            model=build_dit_model(config, init_base_rng=init_base_rng, name=name),
+            model=model,
             config=config,
+            dit_conditioning=True,
         )
         if config.use_modula:
             model = modularize(model)
         return model
 
     def __call__(self, arg, **side_inputs):
-        t = side_inputs["timestep"]
-        t_embed = timestep_embedding(t, self.freq_embed_dim)
-        timestep_cond = self.timestep_mlp(t_embed).astype(self.config.parameter_dtype)
+        if self.dit_conditioning:
+            t = side_inputs["timestep"]
+            t_embed = timestep_embedding(t, self.freq_embed_dim)
+            timestep_cond = self.timestep_mlp(t_embed).astype(self.config.parameter_dtype)
         axis_name_to_mesh_name = self.config.axis_name_to_mesh_name
         mesh = self.config.mesh
-        return self.model(arg, **{**side_inputs, "timestep_cond": timestep_cond,
+        return self.model(arg, **{**side_inputs, **({"timestep_cond": timestep_cond} if self.dit_conditioning else {}),
                                   "axis_name_to_mesh_name": axis_name_to_mesh_name, "mesh": mesh})
 
-    @classmethod
-    def wrap_inputs(cls, x, mask_token, t=None):
-        if t is None:
-            t = (x == mask_token).mean(axis=-1)
+    def wrap_inputs(self, x, mask_token, t=None):
+        if self.dit_conditioning:
+            if t is None:
+                t = (x == mask_token).mean(axis=-1)
+            t = pz.nx.wrap(t, "batch")
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")
         x = pz.nx.wrap(x, "batch", "seq")
-        t = pz.nx.wrap(t, "batch")
-        return x, dict(timestep=t, positions=positions)
+        return x, dict(positions=positions) | ({"timestep": t} if self.dit_conditioning else {})
 
 
 if __name__ == "__main__":
