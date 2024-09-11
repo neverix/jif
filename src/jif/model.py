@@ -488,12 +488,14 @@ def timestep_embedding(t, dim, max_period=10000):
 
 @pz.pytree_dataclass
 class DitWithTimestep(pz.nn.Layer):
-    cond_dim: int = dataclasses.field(metadata={"pytree_node": False})
-    freq_embed_dim: int = dataclasses.field(metadata={"pytree_node": False})
     config: DiTConfig = dataclasses.field(metadata={"pytree_node": False})
     dit_conditioning: bool = dataclasses.field(metadata={"pytree_node": False})
-    timestep_mlp: pz.nn.Layer
     model: pz.nn.Layer
+    cond_dim: int = dataclasses.field(metadata={"pytree_node": False}, default=None)
+    freq_embed_dim: int = dataclasses.field(
+        metadata={"pytree_node": False}, default=None
+    )
+    timestep_mlp: Optional[pz.nn.Layer] = dataclasses.field(default=None)
 
     @classmethod
     def from_config(cls, config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit"):

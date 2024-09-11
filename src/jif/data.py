@@ -61,14 +61,14 @@ def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=2046):
     generator_seed = random.randrange(0, 2**32)
     def data_generator():
         def seed_worker(worker_id):
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
+            np.random.seed(worker_seed + worker_id)
+            random.seed(worker_seed + worker_id)
 
         g = torch.Generator()
         g.manual_seed(generator_seed)
-        return DataLoader(data, batch_size=batch_size, num_workers=8, pin_memory=True, drop_last=True, prefetch_factor=2,
-                          worker_init_fn=seed_worker,
-                          generator=g,)
+        return DataLoader(data, batch_size=batch_size,
+                          num_workers=8, drop_last=True,
+                          worker_init_fn=seed_worker, generator=g,)
     def detokenize(x):
         return data.tokenizer.decode_batch(x)
     return data_generator, detokenize, data.n_classes, data.bos_token
