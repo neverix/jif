@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional
 
 import jax
@@ -31,21 +32,16 @@ class MDLMDiffusion:
         alpha, rate = self.alpha(t), self.alpha_rate(t)
         data_perturbed = self.sample_transition(key, data, alpha)
         data_perturbed = self.replace_bos(data_perturbed)
-        logits = self.process_logits(score_fn(data_perturbed, alpha))
-        labels = self.replace_bos(data)[..., None]
-        # TODO
-        gain = jnp.take_along_axis(jax.nn.log_softmax(logits, -1), labels, -1).squeeze(-1)
-        # lse = jax.nn.logsumexp(logits, axis=-1)
-        # llh = jnp.take_along_axis(logits, labels, -1).squeeze(-1) - lse
-        # z_loss = jnp.square(lse)
-        # checkify.check(jnp.all(llh <= 0), "llh must be nonpositive")
-        # checkify.check(jnp.all(z_loss >= 0), "z_loss must be non-negative")
-        # checkify.check(jnp.all(jnp.isfinite(llh)), "llh must be finite")
-        # checkify.check(jnp.all(jnp.isfinite(z_loss)), "z_loss must be finite")
-        # gain = llh - self.z_loss_coeff * z_loss
-        weights = rate / (1 - alpha)
-        loss = jnp.where(data_perturbed == self.n_classes, weights * gain, 0)
-        return loss
+        score = score_fn(data_perturbed, alpha)
+        with jax.named_scope("Loss computation"):
+            logits = self.process_logits(score)
+            labels = self.replace_bos(data)
+            lse = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
+            gain = jnp.take_along_axis(logits - lse, labels[..., None], axis=-1).squeeze(-1)
+            weights = rate / (1 - alpha)
+            weights, gain = shard_alike(weights, gain)
+            loss = jnp.where(data_perturbed == self.n_classes, weights * gain, 0)
+            return loss
 
     def sample_transition(self, key, data, alpha):
         mask_chance = 1 - alpha
@@ -60,11 +56,11 @@ class MDLMDiffusion:
         return jnp.full_like(_t, -(1 - self.noise_eps))
 
     def process_logits(self, logits):
-        logits = logits - (jnp.arange(logits.shape[-1], dtype=logits.dtype) >= self.n_classes) * 1e10
+        logits = logits.at[..., self.n_classes:].set(-1e10)
         assert logits.shape[-1] >= self.n_classes + 1
         return logits
 
-    # @partial(jax.jit, static_argnames=("use_caching", "denoise", "batch_shape", "n_steps"))
+    # @partial(jax.jit, static_argnames=("use_caching", "denoise", "batch_shape", "n_steps", "projector"))
     def sample(self, score_fn, key, n_steps, batch_shape, denoise=True, projector=lambda x: x, use_caching=False):
         assert not use_caching
         x = jnp.full(batch_shape, self.n_classes)

@@ -9,7 +9,7 @@ readme = "README.md"
 license = {text = "MIT"}
 dependencies = [
     "torch==2.3.1+cpu",
-    "penzai>=0.1.4",
+    "penzai>=0.2.5",
     "fire>=0.6.0",
     "more-itertools>=10.3.0",
     "jax[tpu]>=0.4.31",
@@ -47,4 +47,6 @@ vis = [
     "matplotlib>=3.9.1",
     "isort>=5.13.2",
     "tensorboard-plugin-profile>=2.17.0",
+    "tensorflow>=2.19.0",
+    "tensorboard>=2.19.0",
 ]

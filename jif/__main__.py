@@ -46,11 +46,12 @@ def train(
     ema_dtype="bfloat16",
     accurate_flops_calc=False,
     profile=False,
-    size="small",
+    # size="small",
+    size="big",
     quiet=False,
     fix_batch_size=False,
     loss_sma=256,
-    dit_conditioning=False,
+    dit_conditioning=True,
     use_modula=False
 ):
     profile = profile and not quiet
@@ -82,8 +83,8 @@ def train(
             }[size]
     wandb_every, sample_every = {
         "small": (100, 1000),
-        "medium": (50, 250),
-        "big": (10, 100),
+        "medium": (50, 500),
+        "big": (25, 300),
     }[size]
     data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
@@ -220,7 +221,7 @@ def train(
                     loss_compiled = get_loss_grad.lower([v.freeze() for v in model_variables],
                                                 jax.random.key(0), None,
                                                 sample=sample, update_state=False).compile()
-                    model_flops = loss_compiled.cost_analysis()[0]["flops"]
+                    model_flops = loss_compiled.cost_analysis()["flops"]
                     del model, model_variables
                 else:
                     model_flops = batch_size * seq_len * 6 * param_count
@@ -233,7 +234,7 @@ def train(
             out["err"].throw()
         loss = float(out["loss"])
         losses.append(loss)
-        if step == 25 and profile:
+        if step == 100 and profile:
             jax.profiler.stop_trace()
             
         log_dict = dict(loss=loss, loss_sma=np.mean(losses[-loss_sma:]))

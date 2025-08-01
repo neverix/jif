@@ -45,7 +45,7 @@ class DiTConfig:
     ln_dtype: str = "bfloat16"
     rope_wavelength: float = 10_000.0
     
-    use_flash_attention: bool = False
+    use_flash_attention: bool = True
     stack_layers: bool = True
 
     axis_name_to_mesh_name: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -355,11 +355,11 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
                 dtype=config.parameter_dtype,
                 name=f"{name}/output_proj",
                 init_base_rng=init_base_rng,
-            ),
-        ]),
-    )
+                ),
+            ]),
+        )
     if config.use_flash_attention:
-        return FlashAttention.from_attn(
+        attn = FlashAttention.from_attn(
             attn,
             softmax_axis="kv_seq",
             head_axis="kv_heads",
@@ -368,11 +368,11 @@ def build_dit_attn(name: str, init_base_rng: jax.Array | None, config: DiTConfig
             qk_projection_axis="qk_dim",
             v_projection_axis="v_dim",
         )
-    return attn
+    return pz.nn.NamedGroup("attn", [attn])
 
 
 def build_dit_ff(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
-    return pz.nn.Sequential([
+    return pz.nn.NamedGroup("ff", [
         pz.nn.Affine.from_config(
             init_base_rng=init_base_rng,
             input_axes={"embedding": config.d_model},
@@ -399,7 +399,7 @@ class Checkpoint(pz.nn.Sequential):
 
 
 def build_dit_block(name: str, init_base_rng: jax.Array | None, config: DiTConfig):
-    return model_parts.TransformerBlock(sublayers=[
+    return pz.nn.NamedGroup("dit_block", [
         pz.nn.Residual(AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
@@ -419,21 +419,32 @@ def pad_to(x: int, y: int):
     return x + (y - x % y) % y
 
 UNEMBED_PAD = 256
+
+
+@pz.pytree_dataclass(has_implicitly_inherited_fields=True)
+class FastEmbeddingLookup(pz.nn.EmbeddingLookup):
+    def __call__(self, arg: pz.nx.NamedArray, **side_inputs):
+        embedding_axes = ("embedding",)  # TODO
+        embeddings = self.table.embeddings.value.unwrap(self.table.vocabulary_axis, *embedding_axes)
+        return pz.nx.wrap(embeddings[arg.data_array], *arg.named_shape.keys(), *embedding_axes)
+
+
 def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: str = "dit_model"):
     vocab_size_in = pad_to(config.vocab_size + 1, UNEMBED_PAD)
     vocab_size_out = pad_to(config.vocab_size + 1, UNEMBED_PAD)
-    return pz.nn.Sequential([
-        pz.nn.EmbeddingLookup(
+    return pz.nn.NamedGroup("model", [
+        pz.nn.NamedGroup("embedder", [FastEmbeddingLookup(
             pz.nn.EmbeddingTable.from_config(
                 name=f"{name}/embedder",
                 init_base_rng=init_base_rng,
                 vocab_size=vocab_size_in,
                 embedding_axes={"embedding": config.d_model},
-                dtype=config.parameter_dtype,
+                    dtype=config.parameter_dtype,
+                ),
             ),
-        ),
+        ]),
         pz.nn.CastToDType(dtype=config.resid_dtype),
-    ] + ([
+    ] + [pz.nn.NamedGroup("layers", [
         pz.nn.LayerStack.from_sublayer_builder(
             builder=build_dit_block,
             stack_axis="blocks",
@@ -446,12 +457,12 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
             build_dit_block(name=f"{name}/blocks/{i}", init_base_rng=init_base_rng, config=config)
             for i in range(config.n_layers)
         ]),
-    ]) + [
+    ])] + [pz.nn.NamedGroup("final", [
         AdaLN.wrap_with_config(
             config=config,
             init_base_rng=init_base_rng,
             name=f"{name}/final_adaln",
-            child=pz.nn.EmbeddingDecode(
+            child=pz.nn.NamedGroup("unembedder", [pz.nn.EmbeddingDecode(
                 pz.nn.EmbeddingTable.from_config(
                     name=f"{name}/unembedder",
                     init_base_rng=init_base_rng,
@@ -459,10 +470,10 @@ def build_dit_model(config: DiTConfig, init_base_rng: jax.Array | None, name: st
                     embedding_axes={"embedding": config.d_model},
                     dtype=config.parameter_dtype,
                 ),
-            ),
+            )]),
             scale_output=False
         )
-    ])
+    ])])
 
 
 def timestep_embedding(t, dim, max_period=10000):
