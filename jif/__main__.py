@@ -17,15 +17,7 @@ import wandb
 from .data import get_data
 from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
-
-
-def clone_schedule_free(optimizer):
-    def init(params):
-        state = optimizer.init(params)
-        state = state._replace(z=jax.tree.map(lambda x: x.copy(), state.z))
-        return state
-
-    return optax.GradientTransformation(init, optimizer.update)
+from .muon import muon
 
 
 def train(
@@ -36,6 +28,7 @@ def train(
     n_steps=10_000,
     lr=1e-3,
     schedule_free=False,
+    use_muon=True,
     b1=0.9,
     b2=0.98,
     warmup_steps=100,
@@ -163,13 +156,17 @@ def train(
         err = None
         return loss.mean(), new_state, {"loss": loss.mean(), "err": err}
 
-    if not schedule_free:
+    if use_muon:
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
-        optimizer = optax.adamw(lr_fn, b1=b1, b2=b2)
+        optimizer = muon(lr_fn)
     else:
-        lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
-        optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
-        optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
+        if not schedule_free:
+            lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
+            optimizer = optax.adamw(lr_fn, b1=b1, b2=b2)
+        else:
+            lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
+            optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
+            optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
     trainer = basic_training.StatefulTrainer.build(
         model=model,
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
@@ -252,6 +249,15 @@ def train(
                 print(f"Sampling at step {step}...")
                 print(detokenize(get_samples(trainer, 4, seq_len, jax.random.fold_in(sample_key, step)).tolist()))
     return log_dict
+
+
+def clone_schedule_free(optimizer):
+    def init(params):
+        state = optimizer.init(params)
+        state = state._replace(z=jax.tree.map(lambda x: x.copy(), state.z))
+        return state
+
+    return optax.GradientTransformation(init, optimizer.update)
 
 
 if __name__ == "__main__":
