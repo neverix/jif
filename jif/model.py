@@ -545,9 +545,10 @@ class DitWithTimestep(pz.nn.Layer):
         return self.model(arg, **{**side_inputs, **({"timestep_cond": timestep_cond} if self.dit_conditioning else {}),
                                   "axis_name_to_mesh_name": axis_name_to_mesh_name, "mesh": mesh})
 
-    def wrap_inputs(self, x, mask_token, t=None):
+    def wrap_inputs(self, x, mask_token=None, t=None):
         if self.dit_conditioning:
             if t is None:
+                assert mask_token is not None
                 t = (x == mask_token).mean(axis=-1)
             t = pz.nx.wrap(t, "batch")
         positions = pz.nx.wrap(jnp.arange(x.shape[-1]), "seq")

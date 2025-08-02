@@ -9,7 +9,7 @@ import optax
 import torch
 from jax import sharding
 from penzai import pz
-from penzai.toolshed import basic_training, sharding_util
+from penzai.toolshed import sharding_util
 from tqdm.auto import tqdm, trange
 
 import wandb
@@ -17,7 +17,9 @@ import wandb
 from .data import get_data
 from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
+from . import basic_training
 from .muon import muon
+from .flerm import scale_by_flerm
 
 
 def train(
@@ -122,7 +124,7 @@ def train(
     ema_dtype = getattr(jnp, ema_dtype)
 
     key = jax.random.key(seed)
-    model_key, run_key, sample_key = jax.random.split(key, 3)
+    model_key, run_key, sample_key, data_root_rng = jax.random.split(key, 4)
 
     model = sharding_util.sharded_init(DitWithTimestep.from_config,
                                        config, model_key,
@@ -135,9 +137,8 @@ def train(
              .insert_after(sharding_util.ConstrainShardingByName(
                  mesh, axis_name_to_mesh_name=axis_name_to_mesh_name)))
     
-    def score_fn(model, x, _t):
-        mask = x == n_classes
-        x, side_inputs = model.wrap_inputs(x, mask)
+    def score_fn(model, x, t):
+        x, side_inputs = model.wrap_inputs(x, t=t)
         y = model(x, **side_inputs)
         return y.unwrap("batch", "seq", "vocabulary")
 
@@ -151,8 +152,8 @@ def train(
         else:
             new_state = state
             
-        # err, loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
-        loss = diffusion.get_loss(rng, partial(score_fn, model), sample)
+        data = diffusion.perturb(rng, sample)
+        loss = data.loss(score_fn(model, data.data_perturbed, data.t))
         err = None
         return loss.mean(), new_state, {"loss": loss.mean(), "err": err}
 
@@ -167,6 +168,7 @@ def train(
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
             optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
             optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
+    optimizer = optax.chain(optimizer, scale_by_flerm(lr_fn, pz.unbind_params(model)[0]))
     trainer = basic_training.StatefulTrainer.build(
         model=model,
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
@@ -196,7 +198,8 @@ def train(
         else:
             ema_model = model
 
-        samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,))
+        table = model.select().at_instances_of(pz.nn.EmbeddingDecode).get().table
+        samples = diffusion.sample(partial(score_fn, ema_model), key, num_steps, (batch_size, seq_len,), vocab_size=table.embeddings.value.named_shape[table.vocabulary_axis])
         return samples
 
     slots = pz.unbind_variables(trainer.model)[0]
@@ -226,7 +229,9 @@ def train(
                 print(f" (per token: {model_flops / seq_len / batch_size:.2f})")
         if step == 5 and profile:
             jax.profiler.start_trace("/tmp/tensorboard")
-        out = trainer.step(sample=sample)
+        step_rng = jax.random.fold_in(data_root_rng, trainer.state.value.step)
+        diffusion_input_additional = diffusion.perturb(step_rng, sample)
+        out = trainer.step(sample=sample, optimizer_extra_args={"in_kwargs": {"x": diffusion_input_additional.data_perturbed, "t": diffusion_input_additional.t}})
         if out.get("err") is not None:
             out["err"].throw()
         loss = float(out["loss"])
