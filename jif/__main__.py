@@ -19,7 +19,6 @@ from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
 from . import basic_training
 from .muon import muon
-from .flerm import scale_by_flerm
 
 
 def train(
@@ -30,7 +29,7 @@ def train(
     n_steps=10_000,
     lr=1e-3,
     schedule_free=False,
-    use_muon=True,
+    use_muon=False,
     b1=0.9,
     b2=0.98,
     warmup_steps=100,
@@ -168,7 +167,6 @@ def train(
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
             optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
             optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
-    optimizer = optax.chain(optimizer, scale_by_flerm(lr_fn, pz.unbind_params(model)[0]))
     trainer = basic_training.StatefulTrainer.build(
         model=model,
         optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
