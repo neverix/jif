@@ -130,9 +130,7 @@ def scale_by_demo(b1=0.999, eps=1e-8, config: ProjectConfig = ProjectConfig(chun
         mu = jax.tree.map(lambda x, y: b1 * x + y, state.mu, updates)
         q = extract_dct(mu, config=state.config)
         unprojected_q = reconstruct_dct(q, config=state.config)
-        # mu = jax.tree.map(lambda x, y: x - y, mu, unprojected_q)
-        # if additional_q is not None:
-        #     unprojected_q = jax.tree.map(lambda x, y: x + y, unprojected_q, additional_q)
+        mu = jax.tree.map(lambda x, y: x - y, mu, unprojected_q)
         update = unprojected_q
         update = jax.tree.map(lambda x: jnp.sign(x), update)
         return update, replace(

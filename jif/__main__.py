@@ -163,7 +163,7 @@ def train(
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
         optimizer = muon(lr_fn)
     elif use_demo:
-        lr_fn = optax.warmup_cosine_decay_schedule(0, lr / 10, warmup_steps, n_steps)
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr * 1e-0, warmup_steps, n_steps)
         # TODO tune lr
         adam_lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
         # optimizer = demo(lr_fn)
@@ -172,8 +172,8 @@ def train(
             "demo": demo(lr_fn),
         }, param_labels=lambda params: jax.tree.map((lambda x:
             # TODO
-            "adam" if x.ndim == 1 else "demo"
-            # "demo"
+            # "adam" if x.ndim == 1 else "demo"
+            "demo"
         ), params))
     else:
         if not schedule_free:
