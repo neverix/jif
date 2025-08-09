@@ -68,17 +68,16 @@ class ProjectConfig:
     chunk_size: int
     k: int
 
-class DemoState(NamedTuple):
+class DemoState(eqx.Module):
     count: jnp.ndarray
     mu: base.Updates
     last_q: base.Updates
-    config: ProjectConfig
+    config: ProjectConfig = eqx.field(static=True)
 
 
 class DemoTopk(eqx.Module):
     values: jax.Array
     indices: jax.Array
-
 
 def extract_dct(param, *, config: ProjectConfig):
     def map_fn(x):
@@ -86,7 +85,7 @@ def extract_dct(param, *, config: ProjectConfig):
         bulked = move_bulk_last(projected, config.chunk_size)
         values, indices = jax.lax.top_k(
             bulked,
-            k=config.k,
+            k=min(config.k, bulked.shape[-1]),
         )
         return DemoTopk(values, indices)
     
@@ -116,39 +115,40 @@ def reconstruct_dct(q, *, config: ProjectConfig):
     return jax.tree.map(map_fn, q, is_leaf=lambda x: isinstance(x, DemoTopk))
         
 
-def scale_by_demo(b1=0.999, eps=1e-8, config: ProjectConfig = ProjectConfig(chunk_size=32, k=32)) -> base.GradientTransformationExtraArgs:
+def scale_by_demo(b1=0.999, eps=1e-8, config: ProjectConfig = ProjectConfig(chunk_size=8, k=64)) -> base.GradientTransformationExtraArgs:
     def init_fn(params):
+        for param in jax.tree.flatten(params)[0]:
+            assert all(d % config.chunk_size == 0 for d in param.shape), f"chunk size must divide all dimensions; got param with shape {param.shape}"
         return DemoState(
             count=jnp.zeros((), jnp.int32),
-            mu=jax.tree_map(lambda x: jnp.zeros_like(x), params),
+            mu=jax.tree.map(lambda x: jnp.zeros_like(x), params),
             last_q=jax.tree.map(lambda x: jnp.zeros_like(x), extract_dct(params, config=config)),
             config=config,
         )
     
-    def update_fn(updates, state, params=None, *, additional_q=None):
+    def update_fn(updates, state, params=None, *, in_kwargs):
         mu = jax.tree.map(lambda x, y: b1 * x + y, state.mu, updates)
-        # q = extract_dct(mu, config=state.config)
-        # unprojected_q = reconstruct_dct(q, config=state.config)
+        q = extract_dct(mu, config=state.config)
+        unprojected_q = reconstruct_dct(q, config=state.config)
         # mu = jax.tree.map(lambda x, y: x - y, mu, unprojected_q)
         # if additional_q is not None:
         #     unprojected_q = jax.tree.map(lambda x, y: x + y, unprojected_q, additional_q)
-        update = mu  # TODO
+        update = unprojected_q
         update = jax.tree.map(lambda x: jnp.sign(x), update)
         return update, replace(
             state,
             mu=mu,
-            # last_q=q,
+            last_q=q,
             count=state.count + 1,
         )
     
     return base.GradientTransformationExtraArgs(
-        update_fn=update_fn,
-        init_fn=init_fn,
+        init_fn, update_fn
     )
 
 
 def demo(lr_fn, **kwargs):
     return optax.chain(
         scale_by_demo(**kwargs),
-        optax.scale_by_schedule(lr_fn),
+        optax.scale_by_learning_rate(lr_fn),
     )

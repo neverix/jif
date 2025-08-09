@@ -20,6 +20,7 @@ from .model import DiTConfig, DitWithTimestep
 from . import basic_training
 from .muon import muon
 from .demo import demo
+from .optax_utils import vmaptax, squeezeflaptax
 
 
 def train(
@@ -28,7 +29,7 @@ def train(
     diffusion_eps = 1e-3,
     ema_decay=0.995,
     n_steps=100_000,
-    lr=1e-4,
+    lr=1e-3,
     schedule_free=False,
     use_muon=False,
     use_demo=True,
@@ -162,8 +163,18 @@ def train(
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
         optimizer = muon(lr_fn)
     elif use_demo:
-        lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
-        optimizer = demo(lr_fn)
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr / 10, warmup_steps, n_steps)
+        # TODO tune lr
+        adam_lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
+        # optimizer = demo(lr_fn)
+        optimizer = optax.partition({
+            "adam": optax.adamw(adam_lr_fn, b1=b1, b2=b2),
+            "demo": demo(lr_fn),
+        }, param_labels=lambda params: jax.tree.map((lambda x:
+            # TODO
+            "adam" if x.ndim == 1 else "demo"
+            # "demo"
+        ), params))
     else:
         if not schedule_free:
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
@@ -174,7 +185,7 @@ def train(
             optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
     trainer = basic_training.StatefulTrainer.build(
         model=model,
-        optimizer_def=optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer),
+        optimizer_def=vmaptax(squeezeflaptax(optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer)), vmap_with_dims=(config.n_layers,)),
         root_rng=run_key,
         loss_fn=get_loss,
         initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).astype(ema_dtype).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
