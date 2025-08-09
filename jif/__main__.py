@@ -43,6 +43,7 @@ def train(
     grad_clip_norm=10.0,
     sample_steps=512,
     ema_dtype="bfloat16",
+    use_flash_attention=True,
     accurate_flops_calc=False,
     profile=False,
     # size="small",
@@ -93,7 +94,7 @@ def train(
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
-                       d_ff=d_model * 3, use_modula=use_modula, dit_conditioning=dit_conditioning)
+                       d_ff=d_model * 3, use_modula=use_modula, dit_conditioning=dit_conditioning, use_flash_attention=use_flash_attention)
 
     if not quiet:
         run = wandb.init(project="jif")
@@ -126,6 +127,7 @@ def train(
         wandb_config.mp = mesh.shape["mp"]
         wandb_config.ema_dtype = ema_dtype
         wandb_config.dit_conditioning = dit_conditioning
+        wandb_config.use_flash_attention = use_flash_attention
         for k, v in config.__dict__.items():
             setattr(wandb_config, "model." + k, v)
 
@@ -255,25 +257,28 @@ def train(
             state = trainer.state.value
             opt_state = state.opt_state
             
-            
             leaves, optim_treedef = jax.tree.flatten(opt_state, is_leaf=lambda x: isinstance(x, DemoState))
             demo_state_indices, demo_states = zip(*[(i, leaf) for i, leaf in enumerate(leaves) if isinstance(leaf, DemoState)])
             assert len(demo_states) > 0
             
-            last_qs = [(state.last_q.values, state.last_q.indices) for state in demo_states]
-            last_qs_cpu = [jax.device_put(x, jax.devices("cpu")[0]) for x in last_qs]
-            # TODO fake
-            received_last_qs_cpu = [[x] for x in last_qs_cpu]
-            received_last_qs = [[device_put_like(x, last_q) for x in xs] for xs, last_q in zip(received_last_qs_cpu, last_qs)]
-            received_last_qs = [[DemoTopk(values=x[0], indices=x[1]) for x in xs] for xs in received_last_qs]
-            demo_states = update_demo_states(demo_states, received_last_qs, vmaptax_dims)
+            last_qs = [state.last_q for state in demo_states]
+            last_qs_cpu = jax.device_put(last_qs, jax.devices("cpu")[0])
+            
+            received_last_qs_cpu = [last_qs_cpu]
+            
+            # TODO figure out why device_put_like doesn't work
+            # received_last_qs = [device_put_like(rlq, last_qs) for rlq in received_last_qs_cpu]
+            received_last_qs = jax.tree.map(lambda x: jax.device_put(x, jax.sharding.NamedSharding(mesh, sharding.PartitionSpec(*((None,) * x.ndim)))), received_last_qs_cpu)
+            
+            for received_last_q in received_last_qs:
+                demo_states = update_demo_states(demo_states, received_last_q, vmaptax_dims)
             
             reverse_demo_state_indices = {i: j for j, i in enumerate(demo_state_indices)}
             new_opt_state = jax.tree.unflatten(optim_treedef, [
                 leaf if i not in demo_state_indices else demo_states[reverse_demo_state_indices[i]]
                 for i, leaf in enumerate(leaves)
             ])
-            
+                
             
             trainer.state.value = basic_training.InternalTrainerState(
                 opt_state=new_opt_state,
@@ -312,17 +317,17 @@ def device_put_like(x, y):
     return jax.tree.map(lambda x, y: jax.device_put(x, y.sharding), x, y)
 
 
+@eqx.filter_jit
 def update_demo_states(demo_states, received_last_qs, vmaptax_dims):
     return [
-        vmap_update_demo_state(state, received_last_q[0])
+        vmap_update_demo_state(state, received_last_q)
         if state.mu.shape[0] in vmaptax_dims
-        else update_demo_state(state, received_last_q[0])
+        else update_demo_state(state, received_last_q)
         for state, received_last_q in zip(demo_states, received_last_qs)]
 
 
 def update_demo_state(state, received_last_q):
     return replace(state, last_unprojected_q=state.last_unprojected_q + reconstruct_dct(received_last_q, config=state.config))
-    # return replace(state, last_unprojected_q=reconstruct_dct(state.last_q, config=state.config) * 1.1)
 
 
 vmap_update_demo_state = eqx.filter_vmap(update_demo_state)
