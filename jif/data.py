@@ -29,7 +29,7 @@ class TSData(IterableDataset):
         tokenizer_json["model"]["merges"] = [v for v in tokenizer_json["model"]["merges"] if "".join(v.partition(" ")[::2]) in vocab]
         self.tokenizer = Tokenizer.from_str(json.dumps(tokenizer_json))
 
-        self.data = load_dataset("roneneldan/TinyStories", split=split)
+        self.data = load_dataset("EleutherAI/fineweb-edu-dedup-10b", split=split)
         self.bos_token = self.tokenizer.token_to_id("<|endoftext|>")
         self.tokenizer.add_special_tokens(["<|pad|>"])
         self.pad_token = self.tokenizer.token_to_id("<|pad|>")
@@ -55,7 +55,7 @@ class TSData(IterableDataset):
                 yield torch.LongTensor(encoding.ids)
 
 
-def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=2046):
+def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=8190):
     data = TSData(split=split, seq_len=seq_len, epochs=epochs, n_tokens=n_tokens)
     worker_seed = random.randrange(0, 2**32)
     generator_seed = random.randrange(0, 2**32)

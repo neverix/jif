@@ -19,6 +19,7 @@ from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
 from . import basic_training
 from .muon import muon
+from .demo import demo
 
 
 def train(
@@ -26,10 +27,11 @@ def train(
     seq_len=128,
     diffusion_eps = 1e-3,
     ema_decay=0.995,
-    n_steps=10_000,
-    lr=1e-3,
+    n_steps=100_000,
+    lr=1e-4,
     schedule_free=False,
     use_muon=False,
+    use_demo=True,
     b1=0.9,
     b2=0.98,
     warmup_steps=100,
@@ -159,6 +161,9 @@ def train(
     if use_muon:
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
         optimizer = muon(lr_fn)
+    elif use_demo:
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
+        optimizer = demo(lr_fn)
     else:
         if not schedule_free:
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
