@@ -2,6 +2,7 @@ from optax._src import base
 import jax
 from typing import NamedTuple, Any
 import equinox as eqx
+from optax.transforms._combining import PartitionState
 
 
 class VmaptaxState(eqx.Module):
@@ -69,3 +70,10 @@ def squeezeflaptax(optimizer) -> base.GradientTransformationExtraArgs:
         return updates, SqueezeflaptaxState(new_state, state.original_shapes)
 
     return base.GradientTransformationExtraArgs(init_fn, update_fn)
+
+
+jax.tree_util.register_pytree_node(
+    PartitionState,
+    lambda x: (x.inner_states, None),
+    lambda leaves, treedef: PartitionState(leaves[0])
+)

@@ -1,6 +1,8 @@
 import random
 from functools import partial
+from dataclasses import replace
 
+import equinox as eqx
 import fire
 import jax
 import jax.numpy as jnp
@@ -19,7 +21,7 @@ from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
 from . import basic_training
 from .muon import muon
-from .demo import demo
+from .demo import demo, ProjectConfig, DemoState, reconstruct_dct, DemoTopk
 from .optax_utils import vmaptax, squeezeflaptax
 
 
@@ -51,6 +53,10 @@ def train(
     dit_conditioning=True,
     use_modula=False
 ):
+    jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+
     profile = profile and not quiet
     
     random.seed(seed)
@@ -163,18 +169,18 @@ def train(
         lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
         optimizer = muon(lr_fn)
     elif use_demo:
-        lr_fn = optax.warmup_cosine_decay_schedule(0, lr * 1e-0, warmup_steps, n_steps)
+        lr_fn = optax.warmup_cosine_decay_schedule(0, lr * 4e-1, warmup_steps, n_steps)
         # TODO tune lr
         adam_lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
-        # optimizer = demo(lr_fn)
-        optimizer = optax.partition({
-            "adam": optax.adamw(adam_lr_fn, b1=b1, b2=b2),
-            "demo": demo(lr_fn),
-        }, param_labels=lambda params: jax.tree.map((lambda x:
-            # TODO
-            # "adam" if x.ndim == 1 else "demo"
-            "demo"
-        ), params))
+        optimizer = demo(lr_fn)
+        # optimizer = optax.partition({
+        #     "adam": optax.adamw(adam_lr_fn, b1=b1, b2=b2),
+        #     "demo": demo(lr_fn, config=ProjectConfig(chunk_size=8, k=4)),
+        # }, param_labels=lambda params: jax.tree.map((lambda x:
+        #     # TODO
+        #     # "adam" if x.ndim == 1 else "demo"
+        #     "demo"
+        # ), params))
     else:
         if not schedule_free:
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps)
@@ -183,14 +189,15 @@ def train(
             lr_fn = optax.warmup_cosine_decay_schedule(0, lr, warmup_steps, n_steps, end_value=lr)
             optimizer = optax.adamw(lr_fn, b1=0., b2=b2)
             optimizer = clone_schedule_free(optax.contrib.schedule_free(optimizer, lr_fn, b1=b1))
+    vmaptax_dims = (config.n_layers,)
     trainer = basic_training.StatefulTrainer.build(
         model=model,
-        optimizer_def=vmaptax(squeezeflaptax(optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer)), vmap_with_dims=(config.n_layers,)),
+        optimizer_def=vmaptax(squeezeflaptax(optax.chain(optax.clip_by_global_norm(grad_clip_norm), optimizer)), vmap_with_dims=vmaptax_dims),
         root_rng=run_key,
         loss_fn=get_loss,
         initial_loss_fn_state=dict(ema=([x.value.unwrap(*x.value.named_shape.keys()).astype(ema_dtype).copy() for x in pz.unbind_params(model)[1]] if ema_decay is not None else None)),
         donate_states=True)
-
+    
     @partial(pz.variable_jit, static_argnames=("batch_size", "seq_len", "num_steps"))
     def get_samples(trainer, batch_size, seq_len, key, num_steps=None):
         if num_steps is None:
@@ -243,9 +250,40 @@ def train(
                 print(f" (per token: {model_flops / seq_len / batch_size:.2f})")
         if step == 5 and profile:
             jax.profiler.start_trace("/tmp/tensorboard")
+
+        if use_demo:
+            state = trainer.state.value
+            opt_state = state.opt_state
+            
+            
+            leaves, optim_treedef = jax.tree.flatten(opt_state, is_leaf=lambda x: isinstance(x, DemoState))
+            demo_state_indices, demo_states = zip(*[(i, leaf) for i, leaf in enumerate(leaves) if isinstance(leaf, DemoState)])
+            assert len(demo_states) > 0
+            
+            last_qs = [(state.last_q.values, state.last_q.indices) for state in demo_states]
+            last_qs_cpu = [jax.device_put(x, jax.devices("cpu")[0]) for x in last_qs]
+            # TODO fake
+            received_last_qs_cpu = [[x] for x in last_qs_cpu]
+            received_last_qs = [[device_put_like(x, last_q) for x in xs] for xs, last_q in zip(received_last_qs_cpu, last_qs)]
+            received_last_qs = [[DemoTopk(values=x[0], indices=x[1]) for x in xs] for xs in received_last_qs]
+            demo_states = update_demo_states(demo_states, received_last_qs, vmaptax_dims)
+            
+            reverse_demo_state_indices = {i: j for j, i in enumerate(demo_state_indices)}
+            new_opt_state = jax.tree.unflatten(optim_treedef, [
+                leaf if i not in demo_state_indices else demo_states[reverse_demo_state_indices[i]]
+                for i, leaf in enumerate(leaves)
+            ])
+            
+            
+            trainer.state.value = basic_training.InternalTrainerState(
+                opt_state=new_opt_state,
+                **{k: v for k, v in vars(state).items() if k != "opt_state"}
+            )
+        
         step_rng = jax.random.fold_in(data_root_rng, trainer.state.value.step)
         diffusion_input_additional = diffusion.perturb(step_rng, sample)
         out = trainer.step(sample=sample, optimizer_extra_args={"in_kwargs": {"x": diffusion_input_additional.data_perturbed, "t": diffusion_input_additional.t}})
+        
         if out.get("err") is not None:
             out["err"].throw()
         loss = float(out["loss"])
@@ -268,6 +306,27 @@ def train(
                 print(f"Sampling at step {step}...")
                 print(detokenize(get_samples(trainer, 4, seq_len, jax.random.fold_in(sample_key, step)).tolist()))
     return log_dict
+
+
+def device_put_like(x, y):
+    return jax.tree.map(lambda x, y: jax.device_put(x, y.sharding), x, y)
+
+
+def update_demo_states(demo_states, received_last_qs, vmaptax_dims):
+    return [
+        vmap_update_demo_state(state, received_last_q[0])
+        if state.mu.shape[0] in vmaptax_dims
+        else update_demo_state(state, received_last_q[0])
+        for state, received_last_q in zip(demo_states, received_last_qs)]
+
+
+def update_demo_state(state, received_last_q):
+    return replace(state, last_unprojected_q=state.last_unprojected_q + reconstruct_dct(received_last_q, config=state.config))
+    # return replace(state, last_unprojected_q=reconstruct_dct(state.last_q, config=state.config) * 1.1)
+
+
+vmap_update_demo_state = eqx.filter_vmap(update_demo_state)
+update_demo_state = eqx.filter_jit(update_demo_state)
 
 
 def clone_schedule_free(optimizer):
