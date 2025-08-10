@@ -4,6 +4,14 @@ import threading
 import queue
 import socket
 import time
+import simple_parsing
+from dataclasses import dataclass
+
+
+@dataclass
+class RaleighInfo(simple_parsing.Serializable):
+    ports: list[int]
+    hosts: list[tuple[str, int]]
 
 
 class RaleighCommunicator(threading.Thread):

@@ -6,6 +6,7 @@ import os
 import io
 import socket
 
+import simple_parsing
 import equinox as eqx
 import fire
 import jax
@@ -29,7 +30,7 @@ from . import basic_training
 from .muon import muon
 from .demo import demo, DemoState, reconstruct_dct
 from .optax_utils import vmaptax, squeezeflaptax
-from .raleigh import RaleighCommunicator
+from .raleigh import RaleighCommunicator, RaleighInfo
 
 
 def train(
@@ -62,10 +63,15 @@ def train(
     dit_conditioning=True,
     use_modula=False,
     raleigh_ports=[],
-    raleigh_friends=[]
+    raleigh_friends=[],
+    raleigh_json=""
 ):
     if not use_demo:
         raleigh_friends = []
+    if use_demo and raleigh_json:
+        raleigh_info = simple_parsing.parse(RaleighInfo, config_path=raleigh_json)
+        raleigh_ports = raleigh_info.ports
+        raleigh_friends = raleigh_info.hosts
 
     profile = profile and not quiet
     
@@ -373,6 +379,7 @@ def update_demo_states(demo_states, received_last_qs, vmaptax_dims):
 
 def update_demo_state(state, received_last_q):
     reconstructed = reconstruct_dct(received_last_q, config=state.config)
+    jax.debug.print("{} {}", jnp.linalg.norm(state.last_unprojected_q), jnp.linalg.norm(reconstructed))
     return replace(state, last_unprojected_q=state.last_unprojected_q + reconstructed)
 
 
@@ -389,37 +396,5 @@ def clone_schedule_free(optimizer):
     return optax.GradientTransformation(init, optimizer.update)
 
 
-def train_parallel(
-    n_threads: int = 2,
-    **kwargs
-):
-    def relative_to(i, j):
-        return (i - j - 1) % n_threads
-    
-    n_needed_ports = n_threads * (n_threads - 1)
-    free_ports = []
-    for _ in range(n_needed_ports):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("0.0.0.0", 0))
-        free_ports.append(s.getsockname()[1])
-        s.close()
-    # free_ports = [13370 + i for i in range(n_threads * (n_threads - 1))]
-    
-    datasets.disable_progress_bars()
-    os.environ["TQDM_DISABLE"] = "1"
-    def train_thread(thread_id):
-        return train(**(kwargs | {
-            "seed": thread_id, "params_seed": 0, "quiet": thread_id != 0,
-            "raleigh_ports": [free_ports[(n_threads - 1) * thread_id + i] for i in range(n_threads - 1)],
-            "raleigh_friends": [("127.0.0.1", free_ports[(n_threads - 1) * thread_id + relative_to(thread_id, i)]) for i in range(n_threads) if i != thread_id]
-        }))
-
-    threads = [threading.Thread(target=train_thread, args=(i,)) for i in range(n_threads)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-
 if __name__ == "__main__":
-    fire.Fire(train_parallel)
+    fire.Fire(train)
