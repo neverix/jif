@@ -14,10 +14,13 @@ class TSData(IterableDataset):
                     seq_len=256,
                     epochs=None,
                     n_tokens=32_500,
+                    seed=None,
                  ):
         self.seq_len = seq_len
         self.epochs = epochs
-        self.base_seed = random.randint(0, 2**31)
+        if seed is None:
+            seed = random.randint(0, 2**31)
+        self.base_seed = seed
 
         tokenizer_url = "https://huggingface.co/roneneldan/TinyStories-1M/raw/main/tokenizer.json"
         tokenizer_json = requests.get(tokenizer_url).json()
@@ -47,8 +50,8 @@ class TSData(IterableDataset):
         data = self.data
         pad_token = self.pad_token
         for epoch in (range(epochs) if epochs else iter(int, 1)):
-            data.shuffle(seed=base_seed + epoch)
-            for text in data:
+            epoch_data = data.shuffle(seed=(base_seed + epoch + random.randrange(0, 2**32)) % 2**32)
+            for text in epoch_data:
                 encoding = tokenizer.encode("<|endoftext|>" + text["text"])
                 encoding.truncate(seq_len)
                 encoding.pad(seq_len, pad_id=pad_token)
@@ -56,7 +59,7 @@ class TSData(IterableDataset):
 
 
 def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=8190, seed=None):
-    data = TSData(split=split, seq_len=seq_len, epochs=epochs, n_tokens=n_tokens)
+    data = TSData(split=split, seq_len=seq_len, epochs=epochs, n_tokens=n_tokens, seed=seed)
     worker_seed = random.randrange(0, 2**32) if seed is None else seed
     generator_seed = random.randrange(0, 2**32) if seed is None else seed
     def data_generator():
@@ -67,7 +70,7 @@ def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=8190, see
         g = torch.Generator()
         g.manual_seed(generator_seed)
         return DataLoader(data, batch_size=batch_size,
-                          num_workers=8, drop_last=True,
+                          num_workers=32, drop_last=True,
                           worker_init_fn=seed_worker, generator=g,)
     def detokenize(x):
         return data.tokenizer.decode_batch(x)

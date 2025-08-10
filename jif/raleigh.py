@@ -12,6 +12,8 @@ from dataclasses import dataclass
 class RaleighInfo(simple_parsing.Serializable):
     ports: list[int]
     hosts: list[tuple[str, int]]
+    seed: int
+    params_seed: int = 0
 
 
 class RaleighCommunicator(threading.Thread):

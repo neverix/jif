@@ -51,6 +51,7 @@ def train(
     params_seed=-1,
     grad_clip_norm=10.0,
     sample_steps=512,
+    sample_first=False,
     ema_dtype="bfloat16",
     use_flash_attention=True,
     accurate_flops_calc=False,
@@ -72,6 +73,8 @@ def train(
         raleigh_info = simple_parsing.parse(RaleighInfo, config_path=raleigh_json)
         raleigh_ports = raleigh_info.ports
         raleigh_friends = raleigh_info.hosts
+        seed = raleigh_info.seed
+        params_seed = raleigh_info.params_seed
 
     profile = profile and not quiet
     
@@ -103,9 +106,10 @@ def train(
     wandb_every, sample_every = {
         "small": (100, 1000),
         "medium": (50, 500),
-        "big": (25, 300),
+        # "big": (25, 300),
+        "big": (25, 999999),
     }[size]
-    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len, seed=seed)
+    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len, seed=seed * 1024)
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
@@ -262,7 +266,7 @@ def train(
             assert communicator.results_queue.get()[0] == "ready"
         print("Communicator ready")
     
-    for step, sample in zip((bar := trange(n_steps)), data_generator()):
+    for step, sample in zip((bar := trange(n_steps, disable=quiet)), data_generator()):
         sample = jax.device_put(jnp.asarray(sample.numpy().astype(np.uint32), device=jax.devices("cpu")[0]), data_sharding)
         if not quiet:
             if model_flops is None:
@@ -358,7 +362,7 @@ def train(
             if not quiet:
                 wandb.log(log_dict, step=step)
         if not quiet:
-            if step % sample_every == 0:
+            if step % sample_every == (0 if sample_first else sample_every - 1):
                 print(f"Sampling at step {step}...")
                 print(detokenize(get_samples(trainer, 4, seq_len, jax.random.fold_in(sample_key, step)).tolist()))
     return log_dict
@@ -379,7 +383,7 @@ def update_demo_states(demo_states, received_last_qs, vmaptax_dims):
 
 def update_demo_state(state, received_last_q):
     reconstructed = reconstruct_dct(received_last_q, config=state.config)
-    jax.debug.print("{} {}", jnp.linalg.norm(state.last_unprojected_q), jnp.linalg.norm(reconstructed))
+    # jax.debug.print("{} {}", jnp.linalg.norm(state.last_unprojected_q), jnp.linalg.norm(reconstructed))
     return replace(state, last_unprojected_q=state.last_unprojected_q + reconstructed)
 
 
