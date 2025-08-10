@@ -6,12 +6,13 @@ import socket
 import time
 import simple_parsing
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class RaleighInfo(simple_parsing.Serializable):
     ports: list[int]
-    hosts: list[tuple[str, int]]
+    hosts: list[Any]
     seed: int
     params_seed: int = 0
     group_id: int = 0
