@@ -55,10 +55,10 @@ class TSData(IterableDataset):
                 yield torch.LongTensor(encoding.ids)
 
 
-def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=8190):
+def get_data(batch_size, seq_len, split="train", epochs=None, n_tokens=8190, seed=None):
     data = TSData(split=split, seq_len=seq_len, epochs=epochs, n_tokens=n_tokens)
-    worker_seed = random.randrange(0, 2**32)
-    generator_seed = random.randrange(0, 2**32)
+    worker_seed = random.randrange(0, 2**32) if seed is None else seed
+    generator_seed = random.randrange(0, 2**32) if seed is None else seed
     def data_generator():
         def seed_worker(worker_id):
             np.random.seed(worker_seed + worker_id)

@@ -47,6 +47,7 @@ def train(
     warmup_steps=100,
     n_mp=1,
     seed=0,
+    params_seed=-1,
     grad_clip_norm=10.0,
     sample_steps=512,
     ema_dtype="bfloat16",
@@ -98,7 +99,7 @@ def train(
         "medium": (50, 500),
         "big": (25, 300),
     }[size]
-    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len)
+    data_generator, detokenize, n_classes, bos_token = get_data(batch_size, seq_len, seed=seed)
     diffusion = MDLMDiffusion(n_classes, diffusion_eps, bos_token=bos_token)
     config = DiTConfig(vocab_size=n_classes, axis_name_to_mesh_name=axis_name_to_mesh_name, mesh=mesh,
                        n_layers=n_layers, d_model=d_model, n_kv_heads=d_model//64, q_rep=1, qk_dim=64, v_dim=64,
@@ -142,7 +143,11 @@ def train(
     ema_dtype = getattr(jnp, ema_dtype)
 
     key = jax.random.key(seed)
-    model_key, run_key, sample_key, data_root_rng = jax.random.split(key, 4)
+    run_key, sample_key, data_root_rng = jax.random.split(key, 3)
+    
+    if params_seed == -1:
+        params_seed = seed
+    model_key = jax.random.key(params_seed)
 
     model = sharding_util.sharded_init(DitWithTimestep.from_config,
                                        config, model_key,
@@ -367,7 +372,8 @@ def update_demo_states(demo_states, received_last_qs, vmaptax_dims):
 
 
 def update_demo_state(state, received_last_q):
-    return replace(state, last_unprojected_q=state.last_unprojected_q + reconstruct_dct(received_last_q, config=state.config))
+    reconstructed = reconstruct_dct(received_last_q, config=state.config)
+    return replace(state, last_unprojected_q=state.last_unprojected_q + reconstructed)
 
 
 vmap_update_demo_state = eqx.filter_vmap(update_demo_state)
@@ -403,7 +409,7 @@ def train_parallel(
     os.environ["TQDM_DISABLE"] = "1"
     def train_thread(thread_id):
         return train(**(kwargs | {
-            "seed": thread_id, "quiet": thread_id != 0,
+            "seed": thread_id, "params_seed": 0, "quiet": thread_id != 0,
             "raleigh_ports": [free_ports[(n_threads - 1) * thread_id + i] for i in range(n_threads - 1)],
             "raleigh_friends": [("127.0.0.1", free_ports[(n_threads - 1) * thread_id + relative_to(thread_id, i)]) for i in range(n_threads) if i != thread_id]
         }))
