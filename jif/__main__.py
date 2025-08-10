@@ -1,6 +1,10 @@
 import random
-from functools import partial
 from dataclasses import replace
+import threading
+from functools import partial
+import os
+import io
+import socket
 
 import equinox as eqx
 import fire
@@ -13,6 +17,8 @@ from jax import sharding
 from penzai import pz
 from penzai.toolshed import sharding_util
 from tqdm.auto import tqdm, trange
+import tqdm as mtqdm
+import datasets
 
 import wandb
 
@@ -21,8 +27,9 @@ from .diffusion import MDLMDiffusion
 from .model import DiTConfig, DitWithTimestep
 from . import basic_training
 from .muon import muon
-from .demo import demo, ProjectConfig, DemoState, reconstruct_dct, DemoTopk
+from .demo import demo, DemoState, reconstruct_dct
 from .optax_utils import vmaptax, squeezeflaptax
+from .raleigh import RaleighCommunicator
 
 
 def train(
@@ -52,11 +59,12 @@ def train(
     fix_batch_size=False,
     loss_sma=256,
     dit_conditioning=True,
-    use_modula=False
+    use_modula=False,
+    raleigh_ports=[],
+    raleigh_friends=[]
 ):
-    jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
-    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    if not use_demo:
+        raleigh_friends = []
 
     profile = profile and not quiet
     
@@ -235,6 +243,14 @@ def train(
     model_flops = None
     losses = []
     log_dict = {}
+    
+    if raleigh_friends:
+        communicator = RaleighCommunicator(raleigh_ports, raleigh_friends)
+        communicator.start()
+        for _ in range(len(raleigh_friends)):
+            assert communicator.results_queue.get()[0] == "ready"
+        print("Communicator ready")
+    
     for step, sample in zip((bar := trange(n_steps)), data_generator()):
         sample = jax.device_put(jnp.asarray(sample.numpy().astype(np.uint32), device=jax.devices("cpu")[0]), data_sharding)
         if not quiet:
@@ -261,10 +277,34 @@ def train(
             demo_state_indices, demo_states = zip(*[(i, leaf) for i, leaf in enumerate(leaves) if isinstance(leaf, DemoState)])
             assert len(demo_states) > 0
             
-            last_qs = [state.last_q for state in demo_states]
-            last_qs_cpu = jax.device_put(last_qs, jax.devices("cpu")[0])
+            last_q = [state.last_q for state in demo_states]
+            last_q_cpu = jax.device_put(last_q, jax.devices("cpu")[0])
             
-            received_last_qs_cpu = [last_qs_cpu]
+            if raleigh_friends:
+                if not communicator.is_alive():
+                    raise RuntimeError(f"Communicator died")
+                last_q_bytes = io.BytesIO()
+                eqx.tree_serialise_leaves(last_q_bytes, last_q_cpu)
+                for _ in range(len(raleigh_friends)):
+                    communicator.queue.put_nowait(("last_qs", last_q_bytes.getvalue()))
+                received_last_qs_bytes = {friend: [] for friend in raleigh_friends}
+                received_last_qs_cpu = {friend: None for friend in raleigh_friends}
+                while True:
+                    if all(received_last_qs_cpu.values()):
+                        break
+                    msg_type, friend, received_last_q_bytes = communicator.results_queue.get()
+                    assert msg_type == "last_qs"
+                    received_last_qs_bytes[friend].append(received_last_q_bytes)
+                    received_length = sum(map(len, received_last_qs_bytes[friend]))
+                    if received_length > len(last_q_bytes.getvalue()):
+                        raise RuntimeError(f"Received more bytes than expected from {friend}")
+                    if received_length == len(last_q_bytes.getvalue()):
+                        recieved_last_q_bytes = b"".join(received_last_qs_bytes[friend])
+                        received_last_qs_cpu[friend] = eqx.tree_deserialise_leaves(io.BytesIO(recieved_last_q_bytes), last_q_cpu)
+                        break
+                received_last_qs_cpu = list(received_last_qs_cpu.values())
+            else:
+                received_last_qs_cpu = [last_q_cpu]
             
             # TODO figure out why device_put_like doesn't work
             # received_last_qs = [device_put_like(rlq, last_qs) for rlq in received_last_qs_cpu]
@@ -343,5 +383,37 @@ def clone_schedule_free(optimizer):
     return optax.GradientTransformation(init, optimizer.update)
 
 
+def train_parallel(
+    n_threads: int = 2,
+    **kwargs
+):
+    def relative_to(i, j):
+        return (i - j - 1) % n_threads
+    
+    n_needed_ports = n_threads * (n_threads - 1)
+    free_ports = []
+    for _ in range(n_needed_ports):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("0.0.0.0", 0))
+        free_ports.append(s.getsockname()[1])
+        s.close()
+    # free_ports = [13370 + i for i in range(n_threads * (n_threads - 1))]
+    
+    datasets.disable_progress_bars()
+    os.environ["TQDM_DISABLE"] = "1"
+    def train_thread(thread_id):
+        return train(**(kwargs | {
+            "seed": thread_id, "quiet": thread_id != 0,
+            "raleigh_ports": [free_ports[(n_threads - 1) * thread_id + i] for i in range(n_threads - 1)],
+            "raleigh_friends": [("127.0.0.1", free_ports[(n_threads - 1) * thread_id + relative_to(thread_id, i)]) for i in range(n_threads) if i != thread_id]
+        }))
+
+    threads = [threading.Thread(target=train_thread, args=(i,)) for i in range(n_threads)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+
 if __name__ == "__main__":
-    fire.Fire(train)
+    fire.Fire(train_parallel)

@@ -1,57 +1,97 @@
 # communicate with remote nodes
-PORT = 13370
 
 import threading
 import queue
 import socket
+import time
 
 
 class RaleighCommunicator(threading.Thread):
-    def __init__(self, friends=[]):
+    def __init__(self, ports, friends=[]):
         super().__init__()
-        self.server = None
+        self.ports = ports
         self.friends = friends
         self.clients = {}
         self.servers = {}
         self.queue = queue.Queue()
+        self.results_queue = queue.Queue()
 
     def run(self):
+        for port in self.ports:
+            self.servers[port] = RaleighFriendServer(port, self.friends[0], self.queue)
+        for friend in self.friends:
+            self.clients[friend] = RaleighFriendClient(friend, self.results_queue)
+        
+        for server in self.servers.values():
+            server.start()
+            server.started.wait()
+        for client in self.clients.values():
+            client.start()
+        
+        for server in self.servers.values():
+            server.join()
+        for client in self.clients.values():
+            client.join()
+
+    def __del__(self):
+        for server in self.servers.values():
+            server.server.close()
+        for client in self.clients.values():
+            client.client.close()
+
+
+class RaleighFriendServer(threading.Thread):
+    def __init__(self, port, friend, queue):
+        super().__init__()
+        self.port = port
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind(("0.0.0.0", PORT))
+        self.started = threading.Event()
+        self.friend = friend
+        self.queue = queue
+
+    def run(self):
+        self.server.bind(("0.0.0.0", self.port))
         self.server.listen(5)
-        
-        for friend in self.friends:
-            self.clients[friend] = RaleighFriend(friend)
-            self.clients[friend].start()
-        
-        for friend in self.friends:
+        self.started.set()
+
+        print(f"{self.port} waiting for connection from {self.friend}")
+        while True:
             new_friend, addr = self.server.accept()
-            addr = addr[0]
-            assert addr in self.friends
-            assert addr not in self.servers
-            self.servers[addr] = new_friend
+            if addr[0] != self.friend[0]:
+                continue
+            break
+        print(f"{self.port} accepted connection from {addr}")
+        assert new_friend.recv(1024) == b"hello"
+        new_friend.send(b"hello hello")
+        print(f"{self.port} sent handshake")
 
         while True:
             msg_type, msg = self.queue.get()
             match msg_type:
+                case "last_qs":
+                    new_friend.send(msg)
                 case _:
-                    pass
-        
-        # while True:
-        #     msg_type, msg = self.queue.get()
-        #     match msg_type:
-        #         case ""
-        
+                    raise ValueError(f"Unknown message type: {msg_type}")
 
-class RaleighFriend(threading.Thread):
-    def __init__(self, friend):
+class RaleighFriendClient(threading.Thread):
+    def __init__(self, friend, results_queue, buffer_size=65536):
         super().__init__()
         self.friend = friend
+        self.results_queue = results_queue
         self.client = None
-        self.server = None
+        self.buffer_size = buffer_size
 
     def run(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client.connect((self.friend, PORT))
+        self.client.connect(self.friend)
 
+        print(f"{self.friend} connecting")
+        start_time = time.time()
         self.client.send(b"hello")
+        assert self.client.recv(1024) == b"hello hello"
+        print(f"{self.friend} connected in {time.time() - start_time} seconds")
+        self.results_queue.put(("ready", self.friend))
+        
+        while True:
+            sent_back = self.client.recv(self.buffer_size)
+            self.results_queue.put(("last_qs", self.friend, sent_back))
