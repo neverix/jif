@@ -14,6 +14,7 @@ class RaleighInfo(simple_parsing.Serializable):
     hosts: list[tuple[str, int]]
     seed: int
     params_seed: int = 0
+    group_id: int = 0
 
 
 class RaleighCommunicator(threading.Thread):
