@@ -94,7 +94,12 @@ class RaleighFriendClient(threading.Thread):
 
     def run(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client.connect(self.friend)
+        while True:
+            try:
+                self.client.connect(self.friend)
+                break
+            except TimeoutError:
+                time.sleep(1)
 
         print(f"{self.friend} connecting")
         start_time = time.time()
