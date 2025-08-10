@@ -22,7 +22,7 @@ class RaleighCommunicator(threading.Thread):
     def __init__(self, ports, friends=[]):
         super().__init__()
         self.ports = ports
-        self.friends = friends
+        self.friends = list(map(tuple, friends))
         self.clients = {}
         self.servers = {}
         self.queue = queue.Queue()
@@ -69,6 +69,7 @@ class RaleighFriendServer(threading.Thread):
         print(f"{self.port} waiting for connection from {self.friend}")
         while True:
             new_friend, addr = self.server.accept()
+            print(f"Got connection from {addr}")
             if addr[0] != self.friend[0]:
                 continue
             break
@@ -97,10 +98,12 @@ class RaleighFriendClient(threading.Thread):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         while True:
             try:
+                print(f"Trying to connect to {self.friend}")
                 self.client.connect(self.friend)
                 break
             except TimeoutError:
                 time.sleep(1)
+        print(f"Connected to {self.friend}")
 
         print(f"{self.friend} connecting")
         start_time = time.time()

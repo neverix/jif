@@ -72,7 +72,7 @@ def train(
     if use_demo and raleigh_json:
         raleigh_info = RaleighInfo.load(raleigh_json)
         raleigh_ports = raleigh_info.ports
-        raleigh_friends = raleigh_info.hosts
+        raleigh_friends = list(map(tuple, raleigh_info.hosts))
         seed = raleigh_info.seed
         params_seed = raleigh_info.params_seed
 
