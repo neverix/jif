@@ -50,7 +50,8 @@ class TSData(IterableDataset):
         data = self.data
         pad_token = self.pad_token
         for epoch in (range(epochs) if epochs else iter(int, 1)):
-            epoch_data = data.shuffle(seed=(base_seed + epoch + random.randrange(0, 2**32)) % 2**32)
+            epoch_data = data.shuffle(seed=(base_seed + epoch + random.randrange(0, 2**32)) % 2**32,
+                                      keep_in_memory=True)
             for text in epoch_data:
                 encoding = tokenizer.encode("<|endoftext|>" + text["text"])
                 encoding.truncate(seq_len)

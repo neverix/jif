@@ -101,7 +101,7 @@ class RaleighFriendClient(threading.Thread):
                 print(f"Trying to connect to {self.friend}")
                 self.client.connect(self.friend)
                 break
-            except TimeoutError:
+            except (TimeoutError, ConnectionRefusedError):
                 time.sleep(1)
         print(f"Connected to {self.friend}")
 
